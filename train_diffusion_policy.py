@@ -21,7 +21,7 @@ from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from diffusers.training_utils import EMAModel
 from diffusers.optimization import get_scheduler
 
-from maze_datasets import MazeDataset
+from antmaze_dataset import MazeDataset
 from common.map_utils import load_forest, create_tree_grid
 from rollout_manager import rollout
 
@@ -83,7 +83,7 @@ def get_dataset(env_id):
             return sample['actions']
 
     elif "car" in env_id.lower():
-        filename = "datasets/car_episodes_small.pkl"
+        filename = "datasets/car_episodes.pkl"
         with open(filename, "rb") as f:
             dataset = pickle.load(f)
         def get_obs(sample):
@@ -520,4 +520,107 @@ def train_by_steps(
     print("Done")
 
 
+def evaluate(checkpoint, env_id,
+             policy="flow_matching",
+             num_episodes=1,
+             render_mode='rgb_array',
+             num_diffusion_iters=10,
+             output_dir='checkpoints/',
+             action_horizon=8,
+             obs_horizon=1,
+             action_history=1,
+             position_conditioned=False,
+             goal_conditioned=True,
+             goal_dim=2,
+             local_map_conditioned=True,
+             local_map_size=10,
+             local_map_scale=0.2,
+             local_map_embedding_dim=64,
+             local_map_encoder="identity",
+             unet_down_dims=[256, 512, 1024],
+             ):
+    if "antmaze" in env_id:
+        obs_dim = 27
+        if not position_conditioned:
+            obs_dim -= 3  # remove (x,y,theta)
+        action_dim = 8
 
+    elif "pointmaze" in env_id:
+        obs_dim = 4
+        if not position_conditioned:
+            obs_dim -= 2  # remove (x,y)
+        action_dim = 2
+        if "medium" in env_id:
+            map_center = (4.0, 4.0)
+        elif "large" in env_id:
+            map_center = (6.0, 4.5)
+
+    elif "dronemaze" in env_id:
+        obs_dim = 10
+        if not position_conditioned:
+            obs_dim -= 2  # remove (x,y)
+        action_dim = 4
+        if "medium" in env_id:
+            map_center = (4.0, 4.0)
+        elif "large" in env_id:
+            map_center = (6.0, 4.5)
+    elif "car" in env_id:
+        obs_dim = 6
+        if not position_conditioned:
+            obs_dim -= 2
+        action_dim = 2
+        map_center = (6.0, 4.5)
+    else:
+        raise ValueError(f"Invalid env_id: {env_id}")
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    checkpoint = torch.load(output_dir + checkpoint)
+    epoch = checkpoint['epoch']
+    noise_pred_net = init_noise_pred_net(
+        action_dim=action_dim,
+        obs_dim=obs_dim,
+        obs_horizon=obs_horizon,
+        action_history=action_history,
+        goal_conditioned=goal_conditioned,
+        goal_dim=goal_dim,
+        local_map_conditioned=local_map_conditioned,
+        local_map_encoder=local_map_encoder,
+        local_map_embedding_dim=local_map_embedding_dim,
+        local_map_size=local_map_size,
+        down_dims=unet_down_dims,
+    )
+
+    noise_pred_net.load_state_dict(checkpoint['noise_pred_net_state_dict'])
+    noise_pred_net = noise_pred_net.to(device)
+    noise_scheduler = None
+    if policy == "diffusion":
+        noise_scheduler = DDPMScheduler(
+            num_train_timesteps=num_diffusion_iters,
+            beta_schedule='squaredcos_cap_v2',
+            clip_sample=True,
+            prediction_type='epsilon'
+        )
+
+    results_per_scenario, frames = rollout(
+        env_id,
+        policy,
+        noise_pred_net,
+        noise_scheduler,
+        max_episode_steps=250,
+        num_diffusion_iters=num_diffusion_iters,
+        position_conditioned=position_conditioned,
+        goal_conditioned=goal_conditioned,
+        local_map_conditioned=local_map_conditioned,
+        local_map_size=local_map_size,
+        scale=local_map_scale,
+        pred_horizon=64,
+    )
+    log_results(None, results_per_scenario, epoch,
+                "action_horizon_2", env_id, step=1)
+    # clip = ImageSequenceClip(video, fps=10)
+    # clip.write_videofile(f'video/{env_id.split("-")[0]}_{epoch}.mp4')
+    # print(f"Total reward: {total_reward}")
+
+
+# if __name__ == "__main__":
+#     train()

@@ -3,10 +3,10 @@ import numpy as np
 from spatialmath.base import r2q
 from spatialmath.base.transforms3d import isrot
 
-# try:
-#     from pytorch3d.ops import corresponding_points_alignment
-# except ImportError:
-#     print("pytorch3d not installed")
+try:
+    from pytorch3d.ops import corresponding_points_alignment
+except ImportError:
+    print("pytorch3d not installed")
 # from pfp import DEVICE
 
 
@@ -116,40 +116,40 @@ def get_canonical_5p_th() -> torch.Tensor:
     return pose_5p
 
 
-# def pfp_to_state5p_th(robot_states: torch.Tensor) -> torch.Tensor:
-#     """
-#     Convert pfp state (B, T, 10) to 5points representation (B, T, 16).
-#     5p: [x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, x4, y4, z4, gripper]
-#     """
-#     device = robot_states.device
-#     poses, gripper = pfp_to_pose_th(robot_states)
-#     canonical_5p = get_canonical_5p_th().to(device)
-#     canonical_5p_homog = torch.cat([canonical_5p, torch.ones(5, 1, device=device)], dim=-1)
-#     poses_5p_homog = (poses @ canonical_5p_homog.mT).mT
-#     poses_5p = poses_5p_homog[..., :3].contiguous().flatten(start_dim=-2)
-#     state5p = torch.cat([poses_5p, gripper], dim=-1)
-#     return state5p
-#
-#
-# def state5p_to_pfp_th(state5p: torch.Tensor) -> torch.Tensor:
-#     """
-#     Convert 5points representation (B, T, 16) to pfp state (B, T, 10) using svd projection.
-#     """
-#     device = state5p.device
-#     leading_dims = state5p.shape[0:2]
-#     # Flatten the batch and time dimensions
-#     state5p = state5p.reshape(-1, *state5p.shape[2:])
-#     poses_5p, gripper = state5p[..., :-1], state5p[..., -1:]
-#     poses_5p = poses_5p.reshape(-1, 5, 3)
-#     canonical_5p = get_canonical_5p_th().expand(poses_5p.shape[0], 5, 3).to(device)
-#     with torch.cuda.amp.autocast(enabled=False):
-#         result = corresponding_points_alignment(canonical_5p, poses_5p)
-#     rotations = result.R.mT
-#     translations = result.T
-#     pfp_state = torch.cat([translations, rotations[..., 0], rotations[..., 1], gripper], dim=-1)
-#     # Reshape back to the batch and time dimensions
-#     pfp_state = pfp_state.reshape(*leading_dims, -1)
-#     return pfp_state
+def pfp_to_state5p_th(robot_states: torch.Tensor) -> torch.Tensor:
+    """
+    Convert pfp state (B, T, 10) to 5points representation (B, T, 16).
+    5p: [x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, x4, y4, z4, gripper]
+    """
+    device = robot_states.device
+    poses, gripper = pfp_to_pose_th(robot_states)
+    canonical_5p = get_canonical_5p_th().to(device)
+    canonical_5p_homog = torch.cat([canonical_5p, torch.ones(5, 1, device=device)], dim=-1)
+    poses_5p_homog = (poses @ canonical_5p_homog.mT).mT
+    poses_5p = poses_5p_homog[..., :3].contiguous().flatten(start_dim=-2)
+    state5p = torch.cat([poses_5p, gripper], dim=-1)
+    return state5p
+
+
+def state5p_to_pfp_th(state5p: torch.Tensor) -> torch.Tensor:
+    """
+    Convert 5points representation (B, T, 16) to pfp state (B, T, 10) using svd projection.
+    """
+    device = state5p.device
+    leading_dims = state5p.shape[0:2]
+    # Flatten the batch and time dimensions
+    state5p = state5p.reshape(-1, *state5p.shape[2:])
+    poses_5p, gripper = state5p[..., :-1], state5p[..., -1:]
+    poses_5p = poses_5p.reshape(-1, 5, 3)
+    canonical_5p = get_canonical_5p_th().expand(poses_5p.shape[0], 5, 3).to(device)
+    with torch.cuda.amp.autocast(enabled=False):
+        result = corresponding_points_alignment(canonical_5p, poses_5p)
+    rotations = result.R.mT
+    translations = result.T
+    pfp_state = torch.cat([translations, rotations[..., 0], rotations[..., 1], gripper], dim=-1)
+    # Reshape back to the batch and time dimensions
+    pfp_state = pfp_state.reshape(*leading_dims, -1)
+    return pfp_state
 
 
 def q_to_rot_mat_np(q):

@@ -3,8 +3,12 @@ import random
 import time
 from collections import deque
 from datetime import datetime
+import os
 
 import matplotlib.pyplot as plt
+# Define the custom colormap
+import matplotlib.colors as mcolors
+
 import minari
 import numpy as np
 import torch
@@ -13,16 +17,22 @@ from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from common.map_utils import is_colliding_maze, is_colliding_drone, is_colliding_car, is_colliding_ant
 from model.diffusion.conditional_unet1d import ConditionalUnet1D
 from policies.fm_policy import DiffusionSampler
+from plot_logger import plot_logger  # Global singleton
+# from plot_manager import plot_manager
 
 
 class Node:
-    def __init__(self, state, parent_action_seq=None,parent_states_seq=None, parent=None):
+    def __init__(self, state, parent_action_seq=None, parent_states_seq=None, parent=None):
         self.state = state
         self.parent_action_seq = parent_action_seq  # Action preceding this state (N,act_dim)
         self.parent_states_seq = parent_states_seq  # States preceding this state (1,N,obs_dim)
         self.parent = parent
         self.cached_actions = deque([])
         self.num_visit = 0
+
+    def __repr__(self):
+        return f"Node(State={self.state}, nVisits={self.num_visit})"
+
 
 class BasePlanner(abc.ABC):
     def __init__(self, start_state, goal_state,
@@ -69,17 +79,17 @@ class BasePlanner(abc.ABC):
         if env_id == 'pushT':
             self.env.set_state(start_state)
         elif 'point' in env_id.lower() or 'ant' in env_id.lower():
-            start = self.env.maze.cell_xy_to_rowcol(start_state[:2])
-            goal = self.env.maze.cell_xy_to_rowcol(goal_state[:2])
+            start = self.env.maze_data.cell_xy_to_rowcol(start_state[:2])
+            goal = self.env.maze_data.cell_xy_to_rowcol(goal_state[:2])
             self.options = {"reset_cell": start, "goal_cell": goal}
             self.env.reset(options=self.options)
 
             self.max_v = 5
-            self.x_center = self.env.maze.x_map_center
-            self.y_center = self.env.maze.y_map_center
-            self.map_width = self.env.maze.map_width
-            self.map_length = self.env.maze.map_length
-            self.maze = np.float32(self.env.maze.maze_map)
+            self.x_center = self.env.maze_data.x_map_center
+            self.y_center = self.env.maze_data.y_map_center
+            self.map_width = self.env.maze_data.map_width
+            self.map_length = self.env.maze_data.map_length
+            self.maze = np.float32(self.env.maze_data.maze_map)
         elif 'drone' in env_id.lower():
             start = self.env.cell_xy_to_rowcol(start_state[:2])
             goal = self.env.cell_xy_to_rowcol(goal_state[:2])
@@ -113,6 +123,17 @@ class BasePlanner(abc.ABC):
         self.save_bad_edges = False
         self.failed_node_list = []
 
+        self._debug = kwargs.get('debug', False)
+        self._scenario_num = str(kwargs.get('scenario_num', '999'))
+        self._scenario_name = str(kwargs.get('scenario_name', 'test'))
+        self.scenario_iter_num = str(kwargs.get('iter_num', '0'))
+        self.save_path = str(kwargs.get('root_folder', 'benchmark_results'))
+        # os.makedirs(self.save_path, exist_ok=True)
+
+    @property
+    def scenario_iter_folder_name(self):
+        return f"Iter_{self.scenario_iter_num}"
+
     @abc.abstractmethod
     def plan(self):
         pass
@@ -131,7 +152,12 @@ class BasePlanner(abc.ABC):
         elif 'car' in self.env_id.lower():
             return is_colliding_car(state, self.maze)
         elif 'ant' in self.env_id.lower():
-            return is_colliding_ant(state, self.maze,1.2,self.s_global)   # default antmaze values
+            return is_colliding_ant(state, self.maze, 1.2, self.s_global)  # default antmaze values
+
+    def sample_row_col_from_probability_map(self):
+        flat = np.random.choice(self.env.prob_map.size, size=1, p=self.env.prob_map.ravel())
+        row, col = np.unravel_index(flat, self.env.prob_map.shape)
+        return row[np.newaxis], col[np.newaxis]
 
     def random_node_sample(self, batch_size=1):
         if random.random() > self.goal_sample_rate:
@@ -152,20 +178,23 @@ class BasePlanner(abc.ABC):
                 q = np.random.uniform(-1, 1, size=(batch_size, 4))
                 return np.concatenate((x, y, z, v, q), axis=1)
             elif 'car' in self.env_id.lower():
-                x = np.random.uniform(-self.map_width / 2, self.map_width / 2, size=(batch_size, 1))
-                y = np.random.uniform(-self.map_length / 2, self.map_length / 2, size=(batch_size, 1))
+                rows, cols = self.sample_row_col_from_probability_map()
+                x, y = self.env.cell_rowcol_to_xy(np.array([rows[0], cols[0]]))
+                x, y = x[np.newaxis], y[np.newaxis]
+                # x = np.random.uniform(-self.map_width / 2, self.map_width / 2, size=(batch_size, 1))
+                # y = np.random.uniform(-self.map_length / 2, self.map_length / 2, size=(batch_size, 1))
                 theta = np.random.uniform(-np.pi, np.pi, size=(batch_size, 1))
                 v = np.random.uniform(-self.max_v, self.max_v, size=(batch_size, 1))
                 throttle = np.random.uniform(-1, 1, size=(batch_size, 1))
                 steer = np.random.uniform(-0.40, 0.40, size=(batch_size, 1))
                 return np.concatenate((x, y, theta, v, throttle, steer), axis=1)
             elif 'ant' in self.env_id.lower():
-                state = np.zeros((1,29))
+                state = np.zeros((1, 29))
                 x = np.random.uniform(-self.s_global * self.map_width / 2,
                                       self.s_global * self.map_width / 2, size=(batch_size, 1))
                 y = np.random.uniform(-self.s_global * self.map_length / 2,
                                       self.s_global * self.map_length / 2, size=(batch_size, 1))
-                state[:,:2] = np.concatenate((x, y), axis=1)
+                state[:, :2] = np.concatenate((x, y), axis=1)
                 return state
         else:
             sample = np.zeros((batch_size, self.start_node.state.shape[0]))
@@ -224,7 +253,18 @@ class BasePlanner(abc.ABC):
         return None, None
 
     def propagate_action_sequence_env(self, state, action_sequence):
+        """
+        given a state and action list, propagate model.
+        Args:
+            state: start state.
+            action_sequence: the action sequence.
+        Returns:
+            obs: end state.
+            done: bool - True if reached goal state.
+            action_sequence - sequence of actions used until reached collision or goal.
+            states_sequence - sequence of states robot visited until reached collision or goal.
 
+        """
         if action_sequence is None:
             raise ValueError("Action sequence is None.")
 
@@ -234,14 +274,15 @@ class BasePlanner(abc.ABC):
         elif 'point' in self.env_id.lower():
             self.env.point_env.set_state(state[:2], state[2:])
         elif 'ant' in self.env_id.lower():
-            self.env.ant_env.set_state(state[:15],state[15:])   #15,14
+            self.env.ant_env.set_state(state[:15], state[15:])
         else:
             self.env.set_state(state)
-        states_sequence = np.zeros((self.action_horizon+1, state.shape[0]))
+        states_sequence = np.zeros((self.action_horizon + 1, state.shape[0]))
         states_sequence[0] = state
-        check_collision_every = 4
+        # check_collision_every = 4
         obs = state
-        for i in range(self.action_horizon):
+        action_counter = 0
+        for i in range(len(action_sequence[:self.action_horizon])):
             # for i, action in enumerate(action_sequence):
             action = action_sequence[i]
             step_result = self.env.step(action)
@@ -256,23 +297,25 @@ class BasePlanner(abc.ABC):
             else:
                 done = step_result[4]['success']
 
-            states_sequence[i+1] = obs
+            states_sequence[i + 1] = obs
             if self.render:
                 self.env.render()
-            if (i % check_collision_every == 0) and (self.check_collision(obs)):
+            # if (i % check_collision_every == 0) and (self.check_collision(obs)):
+            if self.check_collision(obs):
                 # if self.save_bad_edges:
                 #     self.failed_node_list.append(Node(obs,action_sequence[:i],states_sequence[:i]))
                 # return None, done, None, None
                 action_sequence = action_sequence[:i]
                 states_sequence = states_sequence[:i]
-                return obs, None, action_sequence, states_sequence[None,:]
+                return obs, None, action_sequence, states_sequence[None, :]
 
             if done:
-                action_sequence = action_sequence[:i]
-                states_sequence = states_sequence[:i]
+                action_sequence[i + 1:] = 0  # action_sequence[:i+1]
+                # states_sequence = states_sequence[:i + 1]
                 break
-
-        return obs, done, action_sequence, states_sequence[None,:]
+        action_sequence = action_sequence[:self.action_horizon]
+        states_sequence = states_sequence[:len(action_sequence) + 1]
+        return obs, done, action_sequence[:self.action_horizon], states_sequence[None, :]
 
     # def generate_final_path_env(self, final_node):
     #     actions = None
@@ -304,7 +347,6 @@ class BasePlanner(abc.ABC):
             if node.parent_states_seq is not None:
                 path_list = list(node.parent_states_seq[0]) + path_list
 
-
             # For actions, prepend the parent's action sequence (if it exists)
             if node.parent_action_seq is not None:
                 actions_list = list(node.parent_action_seq) + actions_list
@@ -334,24 +376,22 @@ class BasePlanner(abc.ABC):
         plt.plot(self.goal.x, self.goal.y, "rs", markersize=10)
         plt.show()
 
-    def visualize_tree(self, path=None,filename=None):
-
-        # Define the custom colormap
-        import matplotlib.colors as mcolors
+    def visualize_tree(self, path=None, filename=None, goal_state=None, debug=False, has_obs_ahead_list:list=None):
         cmap = mcolors.ListedColormap(['#009FA6', '#E8A563'])  # 0 = blue, 1 = brown
 
         # Create a corresponding normalization
         bounds = [0, 0.5, 1]  # this ensures values are bucketed correctly
         norm = mcolors.BoundaryNorm(bounds, cmap.N)
-
+        # plot_manager.clear()
         plt.figure()
-        # plt.grid(True)
+        plt.grid(True)
         plt.axis("equal")
-        # plt.imshow(self.maze, cmap="binary", origin='lower',
-        #            extent=[-self.x_center,self.x_center,self.y_center, -self.y_center])
+        plt.imshow(self.maze, cmap="binary", origin='lower',
+                   extent=[-self.x_center,self.x_center,self.y_center, -self.y_center])
         plt.imshow(self.maze, cmap=cmap, norm=norm, origin='lower',
                    extent=[-self.x_center, self.x_center, self.y_center, -self.y_center])
-        # plt.scatter(self.start_node.state[0], self.start_node.state[1], color='g', s=100)
+        if goal_state is not None:
+            plt.scatter(goal_state[0], goal_state[1], color='r', s=50, label='Temp Goal')
         x, y, psi = self.start_node.state[0], self.start_node.state[1], self.start_node.state[2]
         car_corners = np.array([
             [0.35 / 2, 0.2 / 2],
@@ -363,34 +403,43 @@ class BasePlanner(abc.ABC):
         car_corners = np.dot(car_corners, np.array([[np.cos(psi), -np.sin(psi)],
                                                     [np.sin(psi), np.cos(psi)]]))
         car_corners += np.array([x, y])
-        plt.fill(car_corners[:, 0], car_corners[:, 1], color='g')#, alpha=0.5
-        plt.scatter(self.goal_state[0], self.goal_state[1], color='r', s=100)
-        plt.legend(['Start State', 'Goal'], loc='upper right')
+        plt.fill(car_corners[:, 0], car_corners[:, 1], color='g', label='Start State')  #, alpha=0.5
+        plt.scatter(self.goal_state[0], self.goal_state[1], color='r', s=100, label='Goal')
+        plt.legend(loc='upper right', bbox_to_anchor=(1.05, 1))
 
-        for node in self.node_list:
+        if has_obs_ahead_list is None:
+            has_obs_ahead_list = [False] * len(self.node_list)
+        else:
+            has_obs_ahead_list.insert(0, False) # the node list is always 1 item longer becuase of head node.
+
+        for idx, node in enumerate(self.node_list):
             if node.parent is not None:
-                edge = node.parent_states_seq[0]   # sequence of states along tree edge
+                edge = node.parent_states_seq[0]  # sequence of states along tree edge
                 # plt.plot(edge[:, 0], edge[:, 1], 'b-')
-                plt.plot(edge[:, 0], edge[:, 1], color='#BF00FF', linewidth=1.5) ##FFA500
+                plt.scatter(node.state[0], node.state[1], s=30, color='#0718b3')
+                plt.plot(edge[:, 0], edge[:, 1], color='#ee00ff' if has_obs_ahead_list[idx] else '#48ff00',
+                         linewidth=1.5)  ##FFA500
 
         if self.save_bad_edges:
             for node in self.failed_node_list:
                 edge = node.parent_states_seq[0]
                 # plt.plot(edge[:, 0], edge[:, 1], 'y-')
-                plt.plot(edge[:, 0], edge[:, 1], color='#FFD700', linewidth=0.5, alpha=0.5) #linestyle='--'
+                plt.plot(edge[:, 0], edge[:, 1], color='#FFD700', linewidth=0.5, alpha=0.5)  #linestyle='--'
 
         if path is not None:
             path = np.array(path)
             plt.plot(path[:, 0], path[:, 1], '#DDDDDD', linewidth=2)
-            np.savetxt(f"pathMPC.csv", path, fmt='%.6f', delimiter=',') #datetime.now().strftime('%Y%m%d%H%M%S')
+            np.savetxt(os.path.join(self.save_path, f"pathMPC.csv"), path, fmt='%.6f',
+                       delimiter=',')  #datetime.now().strftime('%Y%m%d%H%M%S')
 
         # save file and date
-        if filename is None:
-            plt.savefig(f"tree{datetime.now().strftime('%Y%m%d%H%M%S')}.png")
-        else:
-            plt.savefig(f"{filename}.png")
-        plt.close()
-        # plt.show()
+        file_date_name = f'{filename}_tree_{datetime.now().strftime("%Y%m%d%H%M%S")}.png'
+        os.makedirs(os.path.join(self.save_path, self.scenario_iter_folder_name), exist_ok=True)
+        # plot_logger.save_fig(plt.gcf(), os.path.join(self.save_path, self.scenario_iter_folder_name, file_date_name))
+        plt.savefig(f"{os.path.join(self.save_path, self.scenario_iter_folder_name, file_date_name)}")
+        plt.close(plt.gcf())
+        if debug:
+            plt.show()
 
 
 if __name__ == "__main__":

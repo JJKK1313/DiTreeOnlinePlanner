@@ -38,7 +38,7 @@ class MPC_Planner(BasePlanner):
                 print(f"\rIteration: {i}, Elapsed Time: {(curr_time - start_time):.2f} seconds", end="")
             i += 1
             curr_node = self.start_node
-            curr_state = curr_node.state
+            curr_state = curr_node._state
             # states_sequence = curr_state[None, None, :]  # (1,1,obs_dim)
             states_sequence = curr_state[None,None,:] if curr_node.parent_states_seq is None \
                 else curr_node.parent_states_seq # (1,1,obs_dim)

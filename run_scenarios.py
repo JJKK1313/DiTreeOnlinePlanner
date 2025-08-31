@@ -4,6 +4,14 @@ import time
 from datetime import datetime
 import random
 import yaml
+import sys
+
+# Detect if in debug model
+gettrace = getattr(sys, 'gettrace', None)
+DEBUG = False
+if gettrace is not None:
+    DEBUG = gettrace() is not None
+print(f"Debug Mode Enabled: {DEBUG}")
 
 import matplotlib.pyplot as plt
 import minari
@@ -12,6 +20,7 @@ import torch
 
 import gymnasium as gym
 import gymnasium_robotics
+
 gym.register_envs(gymnasium_robotics)
 
 from drone_env import DroneEnv
@@ -69,8 +78,10 @@ def run_experiment(planner, num_runs=100):
     return success_rate, runtimes, iterations, path_lengths, path_avg_speeds, number_of_nodes
 
 
-def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, total_runs=100, time_budget=60, diffusion_sampler_checkpoints=None):
+def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, total_runs=100, time_budget=60,
+                           diffusion_sampler_checkpoints=None):
     # Settings
+    debug = False
 
     seed = 42
 
@@ -90,7 +101,7 @@ def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, total_runs=100, 
 
     debug = loaded_config.get('debug', False)
     prediction_type = loaded_config.get('prediction_type', "actions")  # ["actions","observations"]
-    obs_history = loaded_config.get('obs_history', 1)
+    obs_history = loaded_config.get('obs_history', 1)           # get only current and previous actions and states.
     action_history = loaded_config.get('action_history', 1)
     position_conditioned = False
     goal_conditioned = loaded_config.get('goal_conditioned', True)
@@ -107,16 +118,17 @@ def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, total_runs=100, 
     goal_conditioning_bias = loaded_config.get('goal_conditioning_bias', 0.85)
     prop_duration = loaded_config.get('prop_duration', [64])
 
-
     goal_dim = 2
-    s_global=1.0
+    s_global = 1.0
     if "antmaze" in env_id.lower():
-        obs_dim = 31    # 6D rotation representation
+        # obs_dim = 27
+        obs_dim = 31  # 6D rotation representation
         if not position_conditioned:
             obs_dim -= 2  # remove (x,y)
         action_dim = 8
         s_global = 4.0
         action_horizon = 2
+        # edge_length = 64
         local_map_scale = 0.8
     elif "pointmaze" in env_id.lower():
         obs_dim = 4
@@ -171,9 +183,15 @@ def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, total_runs=100, 
                                                       obs_history=obs_history, action_history=action_history,
                                                       goal_conditioned=True, num_diffusion_iters=num_diffusion_iters,
                                                       local_map_size=local_map_size).eval()
-
+    # diffusion_policy = DiffusionSampler(noise_pred_net_dipper, noise_scheduler, env_id, pred_horizon=256, action_dim=2,
+    #                                     obs_horizon=1, action_history=0, position_conditioned=True).eval()
 
     os.makedirs('benchmark_results', exist_ok=True)
+    dirs_names = os.listdir('benchmark_results')
+    # the index of the current run taken from directories names.
+    iterations = list(map(lambda x: int(x), dirs_names))
+    current_run = max(iterations) + 1 if len(iterations) > 0 else 1
+    os.makedirs(f'benchmark_results/{current_run}', exist_ok=True)
 
     # Load the scenarios from the CSV file
     with open(scenarios_file, mode='r') as scenarios_csv:
@@ -197,6 +215,7 @@ def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, total_runs=100, 
 
             # Create a new environment for each maze with the maze data
             if "pointmaze" in env_id.lower():
+                # env_id = 'PointMaze_Large-v3'
                 env = gym.make('PointMaze_Large-v3', maze_map=maze_data, render_mode=render_mode)
                 start_xy = env.maze.cell_rowcol_to_xy(np.array([int(start_row), int(start_col)]))
                 goal_xy = env.maze.cell_rowcol_to_xy(np.array([int(goal_row), int(goal_col)]))
@@ -213,74 +232,92 @@ def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, total_runs=100, 
                 goal = np.zeros(obs_dim)
                 goal[:2] = goal_xy
             elif "dronemaze" in env_id.lower():
-                env = DroneEnv(maze_map=maze_data,collision_checking=False)
+                env = DroneEnv(maze_map=maze_data, collision_checking=False)
                 start_xy = env.cell_rowcol_to_xy(np.array([int(start_row), int(start_col)]))
                 goal_xy = env.cell_rowcol_to_xy(np.array([int(goal_row), int(goal_col)]))
                 start = np.array([start_xy[0], start_xy[1], 0.5, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
                 goal = np.array([goal_xy[0], goal_xy[1], 0.5, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
             elif "car" in env_id.lower():
-                env = CarEnv(maze_map=maze_data,collision_checking=False)
+                env = CarEnv(maze_map=maze_data, collision_checking=False)  # Collision check is done in RRT Planners
+                # (for convenience).
                 start_xy = env.cell_rowcol_to_xy(np.array([int(start_row), int(start_col)]))
                 start_rad = np.deg2rad(float(start_deg))
                 goal_xy = env.cell_rowcol_to_xy(np.array([int(goal_row), int(goal_col)]))
                 start = np.array([start_xy[0], start_xy[1], start_rad, 0.0, 0.0, 0.0])
                 goal = np.array([goal_xy[0], goal_xy[1], 0.0, 0.0, 0.0, 0.0])
-            #
             diffusion_RRT = RRT_Planner(start, goal, env_id=env_id, environment=env,
-                                              sampler=diffusion_sampler_small_resnet,
-                                              prediction_type=prediction_type,
-                                              action_horizon=action_horizon,
-                                              # edge_length=edge_length,
-                                              local_map_size=local_map_size,
-                                              local_map_scale=local_map_scale,
-                                              global_map_scale=s_global,
-                                              goal_conditioning_bias=goal_conditioning_bias,
-                                              prop_duration=prop_duration,
-                                              time_budget=time_budget, max_iter=300, verbose=True)
+                                        sampler=diffusion_sampler_small_resnet,
+                                        prediction_type=prediction_type,
+                                        action_horizon=action_horizon,
+                                        # edge_length=edge_length,
+                                        local_map_size=local_map_size,
+                                        local_map_scale=local_map_scale,
+                                        global_map_scale=s_global,
+                                        goal_conditioning_bias=goal_conditioning_bias,
+                                        prop_duration=prop_duration,
+                                        time_budget=time_budget, max_iter=300, verbose=True,
+                                        debug=DEBUG)
             Diffuser_MPC = MPC_Planner(start, goal, env_id=env_id, environment=env,
-                                              sampler=diffusion_sampler_small_resnet,
-                                              prediction_type=prediction_type,
-                                              action_horizon=action_horizon,
-                                              local_map_size=local_map_size,
-                                              local_map_scale=local_map_scale,
-                                              global_map_scale=s_global,
-                                              time_budget=time_budget, verbose=True)
-
+                                       sampler=diffusion_sampler_small_resnet,
+                                       prediction_type=prediction_type,
+                                       action_horizon=action_horizon,
+                                       local_map_size=local_map_size,
+                                       local_map_scale=local_map_scale,
+                                       global_map_scale=s_global,
+                                       time_budget=time_budget, verbose=True)
+            Diffuser_random_tree = RandomTreePlanner(start, goal, env_id=env_id, environment=env,
+                                                     sampler=diffusion_sampler_small_resnet,
+                                                     prediction_type=prediction_type,
+                                                     action_horizon=action_horizon,
+                                                     local_map_size=local_map_size,
+                                                     local_map_scale=local_map_scale,
+                                                     time_budget=time_budget, verbose=True)
+            # TODO: not in use because OMPL library which is "better" implemented
+            # kinoRRT = RRT_planner(start, goal, env_id=env_id, environment=env,
+            #                       sampler=UniformSampler(env.action_space),
+            #                       time_budget=time_budget,
+            #                       max_iter=10000,
+            #                       delta_t=0.01,
+            #                       bounds=None,
+            #                       verbose=True,
+            #                       render=True)
 
             # planners = [("Diffuser", Diffuser), ("diffusion_RRT", diffusion_RRT)]
             planners = [
-                        # (f"diffusion_RRT_{cfg_file}", diffusion_RRT),
-                        ("diffusion_RRT_PD64", diffusion_RRT),
-                        # ("diffusion_RRT_PD64_fix", diffusion_RRT)
-                        # ("diffusion_RRT_PD64_GB1", diffusion_RRT),
-                        # ("diffusion_RRT_PD64_GB_50", diffusion_RRT),
-                        # ("diffusion_RRT_PD64_GB_15", diffusion_RRT),
-                        # ("diffusion_RRT_PD64_GB_85", diffusion_RRT),
-                        # ("diffusion_RRT_PD64_epoch10", diffusion_RRT),
-                        # ("diffusion_RRT_PDrand", diffusion_RRT),
-                        # ("diffusion_RRT_PD32", diffusion_RRT),
-                        # ("diffusion_RRT_PD64_DI2", diffusion_RRT),
-                        # ("diffusion_RRT_PD64_DI4", diffusion_RRT),
-                        # ("diffusion_RRT_PD64_DI16", diffusion_RRT),
-                        # ("Diffuser_MPC", Diffuser_MPC),
-                        # ("Diffuser_Random_Tree", Diffuser_random_tree),
-                        # ("diffusion_RRT_drone", diffusion_RRT_drone),
-                        # ("batch_diffusion_RRT_car", diffusion_RRT),
-                        # ("diffusion_RRT_large_cnn", diffusion_RRT_large_cnn),
-                        ]
+                # (f"diffusion_RRT_{cfg_file}", diffusion_RRT),
+                ("diffusion_RRT_PD64", diffusion_RRT),
+                # ("diffusion_RRT_PD64_fix", diffusion_RRT)
+                # ("diffusion_RRT_PD64_GB1", diffusion_RRT),
+                # ("diffusion_RRT_PD64_GB_50", diffusion_RRT),
+                # ("diffusion_RRT_PD64_GB_15", diffusion_RRT),
+                # ("diffusion_RRT_PD64_GB_85", diffusion_RRT),
+                # ("diffusion_RRT_PD64_epoch10", diffusion_RRT),
+                # ("diffusion_RRT_PDrand", diffusion_RRT),
+                # ("diffusion_RRT_PD32", diffusion_RRT),
+                # ("diffusion_RRT_PD64_DI2", diffusion_RRT),
+                # ("diffusion_RRT_PD64_DI4", diffusion_RRT),
+                # ("diffusion_RRT_PD64_DI16", diffusion_RRT),
+                # ("Diffuser_MPC", Diffuser_MPC),
+                # ("Diffuser_Random_Tree", Diffuser_random_tree),
+                # ("diffusion_RRT_drone", diffusion_RRT_drone),
+                # ("batch_diffusion_RRT_car", diffusion_RRT),
+                # ("diffusion_RRT_large_cnn", diffusion_RRT_large_cnn),
+            ]
 
             for planner_name, planner in planners:
                 print(f"Running scenario {scenario_name} with planner {planner_name}...")
                 # Prepare CSV output for each scenario and planner
-                scenario_output_csv = f'benchmark_results/{scenario_name}_{planner_name}_{env_id}.csv'
+                scenario_output_csv = f'benchmark_results/{current_run}/{scenario_name}_{planner_name}_{env_id}.csv'
 
                 existing_rows = 0
+                # Get number of scenarios that were done already
                 if os.path.exists(scenario_output_csv):
                     with open(scenario_output_csv, mode='r', newline='') as file:
                         reader = csv.reader(file)
                         rows = list(reader)
                         if len(rows) > 1:  # Exclude the header
-                            existing_rows = len(rows) - 1
+                            existing_rows = len(rows) - 1  # Exclude the header
+
                 remaining_runs = total_runs - existing_rows
                 if remaining_runs <= 0:
                     print(f"CSV already contains {existing_rows} rows. No additional runs needed.")
@@ -292,15 +329,18 @@ def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, total_runs=100, 
                         with open(scenario_output_csv, mode='w', newline='') as file:
                             writer = csv.writer(file)
                             writer.writerow(['iteration', 'success', 'runtime', 'trajectory_length', 'avg_velocity',
-                                             'num_states_in_tree','num_RRT_iterations',
+                                             'num_states_in_tree', 'num_RRT_iterations',
                                              'ctrl_effort_max', 'ctrl_effort_mean', 'ctrl_effort_std'])
                     # Run only the remaining required iterations
+                    total_cc = 0
                     for i in range(existing_rows, existing_rows + remaining_runs):
                         print(f"Scenario: {scenario_name}, Iteration: {i + 1}/{total_runs}")
+                        common.map_utils.cc_calls = 0
                         start_time = time.time()
                         planner.reset()
                         path_array, actions = planner.plan()
                         end_time = time.time()
+                        total_cc += common.map_utils.cc_calls
 
                         # Collect statistics
                         planner.visualize_tree(path_array)
@@ -329,8 +369,8 @@ def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, total_runs=100, 
                                     f"Error calculating trajectory length for scenario {scenario_name}, planner {planner_name}, run {i}")
                                 print(path_array)
                                 print(ex)
-                                trajectory_length =0# calculate_trajectory_length(path_array)
-                                avg_velocity = 0#calculate_average_velocity(path_array)
+                                trajectory_length = 0  # calculate_trajectory_length(path_array)
+                                avg_velocity = 0  #calculate_average_velocity(path_array)
                                 ctrl_effort = 0
                                 ctrl_effort_max = 0
                                 ctrl_effort_mean = 0
@@ -340,20 +380,23 @@ def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, total_runs=100, 
                             success = 0
                             trajectory_length = -1
                             avg_velocity = -1
-                            trajectory_time=0
+                            trajectory_time = 0
                             num_states_in_tree = -1
                             ctrl_effort_max = -1
                             ctrl_effort_mean = -1
                             ctrl_effort_std = -1
-                        print(f"Avg collision checking calls: {total_cc/(i+1)} for {i+1} iterations")
+                        print(f"Avg collision checking calls: {total_cc / (i + 1)} for {i + 1} iterations")
                         # Write results to CSV
                         with open(scenario_output_csv, mode='a', newline='') as file:
                             writer = csv.writer(file)
                             writer.writerow(
                                 [i + 1, success, runtime, trajectory_length, trajectory_time, avg_velocity,
-                                 num_states_in_tree, num_iterations, ctrl_effort_max, ctrl_effort_mean, ctrl_effort_std])
+                                 num_states_in_tree, num_iterations, ctrl_effort_max, ctrl_effort_mean,
+                                 ctrl_effort_std])
 
-
+            # env.close()
+            # except Exception as e:
+            #     print(f"Iteration {i} failed with error: {e}. Retrying...")
 
 
 def calculate_trajectory_length(path_array):
@@ -367,18 +410,123 @@ def calculate_average_velocity(path_array):
 
 if __name__ == "__main__":
 
+    ## Pointmaze medium UNET
+    # diffusion_sampler_checkpoints = {
+    #     # 'resnet': 'pointmaze_fm_sampler_57.pt',
+    #     'resnet': 'pointmaze_medium_16_03_16_06_epoch_5_step_30000.pt',
+    #     # 'resnet': 'pointmaze_medium_16_03_16_06_epoch_2_step_10000.pt',
+    #     # 'resnet': 'pointmaze_large_31_03_16_14_epoch_15_step_70000.pt',
+    #     # 'resnet': 'pointmaze_large_mirror_31_03_22_12_epoch_8_step_5000.pt',
+    # }
+    # # scenario_file = 'experiments/test_scenarios.csv'
+    # # scenario_file = 'experiments/validation_scenarios_maze.csv'
+    # # scenario_file = 'experiments/validation_scenarios_car.csv'
+    # scenario_file = 'experiments/test_scenarios_ant.csv'
+    #
+    # evaluate_all_scenarios('maps/mazes', scenario_file,  #test_scenarios.csv
+    #                        env_id='pointmaze', total_runs=100, time_budget=120,
+    #                        diffusion_sampler_checkpoints=diffusion_sampler_checkpoints)
+
+    ## Pointmaze Large UNET
+    # diffusion_sampler_checkpoints = {
+    #     # 'resnet': 'FINAL_carmaze_action_prediction_map_02x20_19_02_epoch_10_step_40000.pt',
+    #     'resnet': 'pointmaze_medium_16_03_16_06_epoch_5_step_30000.pt',
+    #
+    # }
+    # # scenario_file = 'experiments/test_scenarios.csv'
+    # # scenario_file = 'experiments/validation_scenarios_maze.csv'
+    # # scenario_file = 'experiments/validation_scenarios_car.csv'
+    # scenario_file = 'experiments/test_scenarios_ant.csv'
+    #
+    # evaluate_all_scenarios('maps/mazes', scenario_file,  #test_scenarios.csv
+    #                        env_id='pointmaze', total_runs=100, time_budget=120,
+    #                        diffusion_sampler_checkpoints=diffusion_sampler_checkpoints)
+
     ## Carmaze
     diffusion_sampler_checkpoints = {
-        'resnet': 'carmaze.pt',
-        # 'resnet': 'antmaze.pt',
+        'resnet': 'carmaze_step_40000-001.pt',
+        # 'resnet': 'FINAL_carmaze_action_prediction_map_02x20_19_02_epoch_10_step_40000.pt',
+        # 'resnet': 'carmaze_action_prediction_map_02x20_new_data19_02_11_31_epoch_5_step_20000.pt',
+        # 'resnet': 'carmaze_16_04_20_12_epoch_14_step_54000.pt',
+        # 'resnet': 'antmaze_action_prediction_map_02x2002_03_18_07_epoch_15_step_25000.pt',
+        # 'resnet': 'antmaze_xl_03_03_08_55_epoch_29_step_50000.pt',
+        # 'resnet': 'antmaze_obs_history_06_03_14_56_epoch_30_step_30000.pt',
 
     }
 
-    # scenario_file = 'experiments/test_scenarios_ant.csv'
-    scenario_file = 'experiments/test_scenarios_car.csv'
+    # scenario_file = 'experiments/test_scenarios_car_impossible.csv'
+    # scenario_file = 'experiments/validation_scenarios_car.csv'
+    # scenario_file = 'experiments/test_scenarios_car_extended.csv'
+    scenario_file = 'experiments/test_scenarios_car_video.csv'
 
-    for cfg_file in ['carmaze']: # /'antmaze'
+    # for cfg_file in ['carmaze_GB_1', 'carmaze_GB_0', 'carmaze_GB_30', 'carmaze_GB_50', 'carmaze_GB_15', 'carmaze_GB_70']:
+    #     evaluate_all_scenarios('maps/mazes', scenario_file,  #test_scenarios.csv
+    #                            cfg_file=cfg_file, total_runs=20, time_budget=120,
+    #                            diffusion_sampler_checkpoints=diffusion_sampler_checkpoints)
+
+    for cfg_file in [
+        'carmaze']:  #['carmaze_PD_64']: #,'carmaze_real 'carmaze_PD_32', 'carmaze_PD_64', 'carmaze_PD_128', 'carmaze_PD_sched', 'carmaze_PD_rand']
         evaluate_all_scenarios('maps/mazes', scenario_file,  #test_scenarios.csv
                                cfg_file=cfg_file, total_runs=10, time_budget=120,
                                diffusion_sampler_checkpoints=diffusion_sampler_checkpoints)
 
+    # for cfg_file in ['carmaze_DI_2', 'carmaze_DI_4', 'carmaze_DI_8', 'carmaze_DI_16', 'carmaze_DI_32']:
+    #     evaluate_all_scenarios('maps/mazes', scenario_file,  #test_scenarios.csv
+    #                            cfg_file=cfg_file, total_runs=20, time_budget=120,
+    #                            diffusion_sampler_checkpoints=diffusion_sampler_checkpoints)
+
+    ## Antmaze
+    # diffusion_sampler_checkpoints = {
+    #     # 'resnet': 'FINAL_carmaze_action_prediction_map_02x20_19_02_epoch_10_step_40000.pt',
+    #     'resnet': 'antmaze_obs_history_06_03_14_56_epoch_30_step_30000.pt',
+    #
+    # }
+    # # # scenario_file = 'experiments/test_scenarios.csv'
+    # # # scenario_file = 'experiments/validation_scenarios_maze.csv'
+    # # # scenario_file = 'experiments/validation_scenarios_car.csv'
+    # # scenario_file = 'experiments/test_scenarios_ant_extended.csv'
+    # scenario_file = 'experiments/test_scenarios_ant_video.csv'
+    # #
+    # cfg_file = 'antmaze'
+    # evaluate_all_scenarios('maps/mazes', scenario_file,  # test_scenarios.csv
+    #                        cfg_file='antmaze', total_runs=20, time_budget=120,
+    #                        diffusion_sampler_checkpoints=diffusion_sampler_checkpoints)
+
+    # diffusion_sampler_checkpoints = {
+    #     'small_resnet': 'pointmaze_fm_medium_augmentations_30_12_19_08_epoch_2.pt',
+    # }
+    # evaluate_all_scenarios('experiments/test_mazes', 'experiments/test_scenarios.csv',
+    #                        env_id='pointmaze-large-v2', k=100,
+    #                        diffusion_sampler_checkpoints=diffusion_sampler_checkpoints,
+    #                        diffuser_checkpoint=None)
+    # results = []
+    #
+    # for planner_name, planner in [("Diffuser", Diffuser), ("diffusion_RRT", diffusion_RRT)]:
+    #     success_rate, runtimes, iterations = run_experiment(planner, num_runs=num_runs)
+    #     avg_runtime = np.mean(runtimes) if runtimes else 0
+    #     std_runtime = np.std(runtimes) if runtimes else 0
+    #     avg_iterations = np.mean(iterations) if iterations else 0
+    #     std_iterations = np.std(iterations) if iterations else 0
+    #     results.append([planner_name, success_rate, avg_runtime, std_runtime, avg_iterations, std_iterations])
+    #
+    #     with open(f"{planner_name}_runtimes.csv", "w", newline="") as csvfile:
+    #         writer = csv.writer(csvfile)
+    #         writer.writerow(["Runtime", "Iterations"])
+    #         writer.writerows(zip(runtimes, iterations))
+    #
+    #     plt.hist(runtimes, bins=20, alpha=0.7,
+    #              label=f"{planner_name} Runtimes (mean={avg_runtime:.2f}, std={std_runtime:.2f})")
+    #     plt.hist(iterations, bins=20, alpha=0.7,
+    #              label=f"{planner_name} Iterations (mean={avg_iterations:.2f}, std={std_iterations:.2f})")
+    #
+    # with open("experiment_results.csv", "w", newline="") as csvfile:
+    #     writer = csv.writer(csvfile)
+    #     writer.writerow(
+    #         ["Planner", "Success Rate", "Average Runtime", "Std Runtime", "Average Iterations", "Std Iterations"])
+    #     writer.writerows(results)
+    #
+    # plt.xlabel("Value")
+    # plt.ylabel("Frequency")
+    # plt.legend()
+    # plt.title("Runtimes and Iterations Histogram")
+    # plt.show()

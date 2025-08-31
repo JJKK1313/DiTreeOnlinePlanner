@@ -1,6 +1,8 @@
+import os
 import random
 import time
 
+import matplotlib.pyplot as plt
 import minari
 import numpy as np
 import torch
@@ -22,8 +24,19 @@ class RRT_Planner(BasePlanner):
         self.goal_sample_rate = 0.15
         self.goal_conditioning_bias = kwargs.get("goal_conditioning_bias", 0.85)  # default is 0.85
         self.prop_duration_schedule = kwargs.get("prop_duration", [64])  # default is [256,128,64] | [64]
+        self.offline_time_budget = kwargs.get("offline_time_budget", 60)
+        self.plan_count = 0
+        self.init_main_path = None
 
-    def reset(self):
+    def reset(self, start_state: np.ndarray = None, goal_state: np.ndarray = None, reset_main_path: bool = False):
+        if reset_main_path:
+            self.init_main_path = None
+        if start_state is not None:
+            self.start_node = Node(start_state)
+            self.goal_state = goal_state
+            self.options["reset_cell"] = self.env.cell_xy_to_rowcol(start_state[:2])
+            self.options["reset_deg"] = np.rad2deg(start_state[2])
+            self.options["goal_cell"] = self.env.cell_xy_to_rowcol(goal_state[:2])
         self.node_list.clear()
         self.node_list = [self.start_node]
         self.failed_node_list = []
@@ -39,17 +52,87 @@ class RRT_Planner(BasePlanner):
         _, index = self.kd_tree.query(samples)
         return [self.node_list[i] for i in index]
 
+    def update_maze(self, new_maze):
+        self.maze = new_maze
+        self.env.maze_map = new_maze
+
+    def check_obstacle_ahead(self, state):
+        x, y, theta = state[:3]
+        row, col = self.env.cell_xy_to_rowcol([x, y], floor_enable=False)
+        # print(row, col, theta)
+        samples = np.linspace(0, 1.5, 30)  # sqrt(2) for at least two diagonals of units.
+        samples = samples[np.newaxis].T @ np.array([[np.cos(-theta), np.sin(-theta)]])
+        samples = samples + np.array([col, row])
+        samples_q = samples.astype('int')
+        samples_q = np.clip(samples_q, [0, 0], np.array(self.maze.shape[::-1]) - 1)
+        # plt.figure()
+        # plt.imshow(self.maze, origin='lower', extent=[0, self.maze.shape[0], 0, self.maze.shape[1]])
+        # plt.xticks(np.arange(0, self.maze.shape[1], 1))
+        # plt.yticks(np.arange(0, self.maze.shape[0], 1))
+        # plt.grid()
+        # plt.scatter(samples_q[:, 0], samples_q[:, 1])   # columns are x and rows are y
+        # plt.scatter(samples[:, 0], samples[:, 1])
+        # plt.scatter(samples[0, 0], samples[0, 1], color='r')
+        # plt.show()
+        if np.any(self.maze[samples_q[:, 1], samples_q[:, 0]]):
+            return True
+        return False
+
+    def extract_path_after_obstacle(self):
+        main_path_array = self.init_main_path[:, :2].copy()
+        # remove the rest of the path as it is no more relevant.
+        curr_state = self.env.state[:2]
+        closest_node_on_path_idx = np.argmin(np.linalg.norm(curr_state - self.init_main_path[:, :2], axis=1))
+        main_path_array = main_path_array[closest_node_on_path_idx:, :]
+        # find where the path is crossing an obstacle
+        main_path_points_rowcol = np.array(
+            list(map(lambda x: self.env.cell_xy_to_rowcol(x).astype('int'), main_path_array)))
+        obstacle_in_path_loc_idx = -1
+        for idx, p in enumerate(main_path_points_rowcol):
+            if self.maze[p[0], p[1]] == 1:
+                obstacle_in_path_loc_idx = idx
+                break
+        cp = main_path_points_rowcol[obstacle_in_path_loc_idx]
+        while self.maze[cp[0], cp[1]] == 1:
+            obstacle_in_path_loc_idx += 1
+            cp = main_path_points_rowcol[obstacle_in_path_loc_idx]
+        # plt.figure()
+        # plt.imshow(self.maze, origin='lower', extent=[0, self.maze.shape[0], 0, self.maze.shape[1]])
+        # for i, s in enumerate(main_path_array[obstacle_in_path_loc_idx:]):
+        #     s = s.copy()
+        #     s[:2] = self.env.cell_xy_to_rowcol(s[:2], floor_enable=False)
+        #     s[:2] = s[:2][::-1]
+        #     plt.scatter(s[0], s[1], s=5, color='#ff0000' if self.maze[int(s[1]), int(s[0])] else '#00ff00')
+        # cu_rc = self.env.cell_xy_to_rowcol(curr_state, floor_enable=False)[::-1]
+        # plt.scatter(cu_rc[0], cu_rc[1], s=100)
+        # plt.show()
+        return main_path_array[obstacle_in_path_loc_idx:]
+
     def plan(self):
-        local_map = None
+        """
+        This function will plan as long as it has left time to do so (under the time budget)
+        Returns: a path plan.
+        """
         start_time = time.time()
         curr_time = time.time()
         total_diffusion_time = 0
-        i = 0
+        iter_num = 0
+        orig_prob_map = self.env.prob_map.copy()
+        has_obstacle_ahead = []
+        self.env.update_prob_map_by_loc()
+        remain_init_path = self.extract_path_after_obstacle() if self.init_main_path is not None else None
+        sample_node = [None]
         while (curr_time - start_time) < self.time_budget:
             if self.verbose:
-                print(f"\rIteration: {i}, Elapsed Time: {(curr_time - start_time):.2f} seconds", end="")
+                print(f"\rIteration: {iter_num}, Elapsed Time: {(curr_time - start_time):.2f} seconds", end="")
+            if remain_init_path is not None:
+                node_idx = np.random.choice(np.arange(len(remain_init_path)))
+                # 40% chance for exploration over exploitation
+                sample_node = self.random_node_sample() if random.random() < 0.4 else remain_init_path[node_idx][
+                    np.newaxis]
+            else:
+                sample_node = self.random_node_sample()  # sample a random state.
 
-            sample_node = self.random_node_sample()
             curr_node = self.nearest_node(sample_node)
             curr_state = curr_node.state
             full_action_seq = None
@@ -58,96 +141,100 @@ class RRT_Planner(BasePlanner):
             prev_actions = curr_node.parent_action_seq
             prev_states = curr_state[None, None, :] if curr_node.parent_states_seq is None \
                 else curr_node.parent_states_seq  # (1,1,obs_dim)
-            edge_length = self.prop_duration_schedule[curr_node.num_visit] if curr_node.num_visit < len(
-                self.prop_duration_schedule) \
-                else self.prop_duration_schedule[-1]
-            # select random int value in range
-            # edge_length = random.randint(self.prop_duration_schedule[0], self.prop_duration_schedule[1])
+            edge_length = self.prop_duration_schedule[
+                np.clip(curr_node.num_visit, 0, len(self.prop_duration_schedule) - 1)
+            ]
             curr_node.num_visit += 1
-            # goal = self.goal_state[:2]
-            # goal = sample_node[0, :2]
-            if random.random() > self.goal_conditioning_bias:  # default is 0.85
-                goal = sample_node[0, :2]
-            else:
-                goal = self.goal_state[:2]
-            for j in range(edge_length // self.action_horizon):  # default is 4
-
-                yaw = 0
-                if "drone" in self.env_id.lower():
-                    q = curr_state[6:10]
-                    yaw = np.arctan2(2 * (q[0] * q[3] + q[1] * q[2]), 1 - 2 * (q[2] ** 2 + q[3] ** 2))
-                elif "car" in self.env_id.lower():
-                    yaw = curr_state[2]
+            goal = sample_node[0, :2] # if random.random() > self.goal_conditioning_bias else self.goal_state[:2]
+            for j in range(edge_length // self.action_horizon):
+                yaw = curr_state[2]
                 local_map = create_local_map(self.maze, curr_state[0],
                                              curr_state[1], yaw,
                                              self.local_map_size,
                                              self.local_map_scale, self.s_global,
                                              (self.x_center, self.y_center))
+
                 local_map = torch.tensor(local_map).to(self.device)
+
                 # Sample and trim the action sequence
                 start_diffusion_time = time.time()
-                sampled_actions = self.sampler(prev_states, prev_actions=prev_actions,
-                                               goal=goal, local_map=local_map)[0]
+                sampled_actions = self.sampler(prev_states,
+                                               prev_actions=prev_actions,
+                                               goal=goal,
+                                               local_map=local_map)[0, :self.action_horizon]
                 end_diffusion_time = time.time()
                 total_diffusion_time += (end_diffusion_time - start_diffusion_time)
+
                 curr_state, done, curr_action_seq, curr_states_seq = self.propagate_action_sequence_env(curr_state,
                                                                                                         sampled_actions)
-
-                # Fill edge's state/action sequence
-                full_action_seq = (np.concatenate((full_action_seq, curr_action_seq))
-                                   if full_action_seq is not None else curr_action_seq)
-                prev_actions = curr_action_seq
-                full_states_seq = (np.concatenate((full_states_seq, curr_states_seq), axis=1)
-                                   if full_states_seq is not None else curr_states_seq)
-                prev_states = curr_states_seq
                 if done is None:  # Collision
                     if self.save_bad_edges:
-                        self.failed_node_list.append(
-                            Node(curr_state, full_action_seq, full_states_seq, parent=curr_node))
+                        self.failed_node_list.append(Node(curr_state, full_action_seq, full_states_seq,
+                                                          parent=curr_node))
                     curr_state = None
                     break
+                # Fill edge's state/action sequence
+                full_action_seq = np.concatenate((full_action_seq, curr_action_seq)) \
+                    if full_action_seq is not None else curr_action_seq
+                prev_actions = curr_action_seq
+                full_states_seq = np.concatenate((full_states_seq, curr_states_seq), axis=1) \
+                    if full_states_seq is not None else curr_states_seq
+                prev_states = curr_states_seq
                 if done:
                     break
 
-            if curr_state is not None:
+            if curr_state is not None and done is not None:
+                non_zero_rows_mask = ~(full_action_seq == 0).all(axis=1)
+                full_action_seq = full_action_seq[non_zero_rows_mask]
+                non_zero_rows_mask = ~(full_states_seq[0] == 0).all(axis=1)
+                full_states_seq = full_states_seq[0, non_zero_rows_mask][np.newaxis]
                 new_node = Node(curr_state, full_action_seq, full_states_seq, parent=curr_node)
-                self.kd_tree = KDTree([node.state[:self.kd_tree_dim] for node in self.node_list])
                 self.node_list.append(new_node)
-                self.visualize_tree(filename=f'tree_plot/{i}')
-            if done:
-                # print diffusion time and total time
-                curr_time = time.time()
-                if self.verbose:
-                    print(f"\rIteration: {i}, Elapsed Time: {(curr_time - start_time):.2f} seconds, "
-                          f"Diffusion Time: {total_diffusion_time:.2f} seconds", end="")
-                return self.handle_goal_reached(new_node, i, start_time)
-                # if self.verbose:
-                #     print(f" Goal reached in {i} iterations.")
-                # path, actions = self.generate_final_path_env(new_node)
-                # self.results["iterations"] = i
-                # self.results["time"] = curr_time - start_time
-                # self.results["path"] = path
-                # self.results["path_time"] = len(path) * self.env_dt
-                # self.results["actions"] = actions
-                # self.results["number_of_nodes"] = len(self.node_list)
-                # # self.visualize_tree()
-                #
-                # return path, actions
+                has_obstacle_ahead.append(self.check_obstacle_ahead(curr_state))
+                self.kd_tree = KDTree([node.state[:self.kd_tree_dim] for node in self.node_list])
+                if done:
+                    # print diffusion time and total time
+                    curr_time = time.time()
+                    if self.verbose:
+                        print(f"\rIteration: {iter_num}, Elapsed Time: {(curr_time - start_time):.2f} seconds, "
+                              f"Diffusion Time: {total_diffusion_time:.2f} seconds", end="")
+                    self.env.prob_map = orig_prob_map
+                    self.visualize_tree(filename=f'plan_{self.plan_count}_iter_{iter_num}', debug=self._debug,
+                                        goal_state=sample_node[0], has_obs_ahead_list=has_obstacle_ahead.copy())
+                    return self.handle_goal_reached(new_node, iter_num, start_time)
 
-            i += 1
+            iter_num += 1
             curr_time = time.time()
         curr_time = time.time()
         if self.verbose:
-            print(f"\rIteration: {i}, Elapsed Time: {(curr_time - start_time):.2f} seconds, "
+            print(f"\rIteration: {iter_num}, Elapsed Time: {(curr_time - start_time):.2f} seconds, "
                   f"Diffusion Time: {total_diffusion_time:.2f} seconds", end="")
-        return self.handle_goal_not_reached(i, start_time)
-        # if self.verbose:
-        #     print(f" Goal not reached in {i} iterations.")
-        # self.results["iterations"] = i
-        # self.results["time"] = curr_time - start_time
-        # self.results["number_of_nodes"] = len(self.node_list)
-        # # self.visualize_tree()
-        # return None, None
+        if np.all(has_obstacle_ahead):
+            self.visualize_tree(filename=f'plan_{self.plan_count}_iter_{iter_num}', debug=self._debug,
+                                has_obs_ahead_list=has_obstacle_ahead.copy())
+            self.env.prob_map = orig_prob_map
+            return None, None
+
+        node_list_wo_start = self.node_list[1:]
+        if self.init_main_path is None:
+            distances = np.array([np.linalg.norm(nd.state[:2] - self.goal_state[:2]) for nd in node_list_wo_start])
+            cost = distances + 10e3 * np.array(has_obstacle_ahead, dtype='int')
+            nearest_sample_to_goal = node_list_wo_start[np.argmin(cost)]
+        else:
+            # calc for each new node list candidate the nearest neighbor index along main path
+            nn_index_along_main_path = \
+                np.array(
+                    [  # list comprehension
+                        np.argmin(np.linalg.norm(nd.state[:2] - self.init_main_path[:, :2], axis=1))
+                        if not has_obstacle_ahead[idx] else -1 for idx, nd in enumerate(node_list_wo_start)
+                    ]
+                )
+            # if it has obstacle then add big cost
+            nearest_sample_to_goal = node_list_wo_start[np.argmax(nn_index_along_main_path)]
+        self.env.prob_map = orig_prob_map
+        self.visualize_tree(filename=f'plan_{self.plan_count}_iter_{iter_num}', debug=self._debug,
+                            goal_state=sample_node[0], has_obs_ahead_list=has_obstacle_ahead.copy())
+        return self.handle_goal_reached(nearest_sample_to_goal, iter_num, start_time)
 
 
 if __name__ == "__main__":

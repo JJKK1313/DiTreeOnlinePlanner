@@ -9,12 +9,6 @@ import torchvision.models as models
 
 from model.diffusion.conditional_unet1d import ConditionalUnet1D
 
-"""
-This module defines various encoder classes and utility functions for processing
-local maps and generating embeddings. It includes implementations for ResNet-based,
-MLP-based, and other custom encoders, as well as utilities for replacing submodules
-in PyTorch models.
-"""
 
 def get_resnet(name:str, weights=None, **kwargs) -> nn.Module:
     """
@@ -97,14 +91,17 @@ class ConditionalUnet1DWithLocalMap(nn.Module):
             self.encoder = MLPEncoder(local_map_size ** 2, embedding_dim)
         elif encoder_name == 'resnet':
             self.encoder = ResNet18Encoder(embedding_dim)
+            # self.encoder = get_resnet('resnet18')
             self.encoder = replace_bn_with_gn(self.encoder)   ## TEMP, please uncomment
         else:
             raise ValueError(f"Unknown encoder: {encoder_name}")
+        # self.state_encoder = MLPEncoder(additional_global_cond_dim, state_embedding_dim)
         self.unet = ConditionalUnet1D(input_dim, global_cond_dim=embedding_dim + additional_global_cond_dim, **kwargs)
 
     def forward(self, sample, local_map, timestep, global_cond=None, **kwargs):
         local_map_embedding = self.encoder(local_map)  # Process the image to get conditioning features
         if global_cond is not None:
+            # global_cond = self.state_encoder(global_cond)
             global_cond = torch.cat([local_map_embedding, global_cond], dim=1)
         else:
             global_cond = local_map_embedding
@@ -124,6 +121,17 @@ class ResNet18Encoder(nn.Module):
         x = self.resnet18(x)
         return x
 
+# class ResNetEncoder(nn.Module):
+#     def __init__(self, embedding_dim=9, pretrained=False):
+#         super().__init__()
+#         self.resnet18 = models.resnet18(pretrained=pretrained)
+#         self.resnet18.fc = nn.Linear(self.resnet18.fc.in_features, embedding_dim)
+#
+#     def forward(self, x):
+#         x = x.unsqueeze(1)  # Add channel dimension
+#         x = x.repeat(1, 3, 1, 1)  # Repeat channel to match ResNet input
+#         x = self.resnet18(x)
+#         return x
 
 
 class MLPEncoder(nn.Module):

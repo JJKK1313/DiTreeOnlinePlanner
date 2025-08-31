@@ -7,10 +7,15 @@ import matplotlib.pyplot as plt
 
 import gymnasium as gym
 from gymnasium import spaces
+import numpy as np
 
+# from vehiclemodels.parameters_vehicle2 import parameters_vehicle2
 from casadi import *
 
 from common.map_utils import is_colliding_car
+from lidar_sim.lidar_2d_sim import Lidar2DSim
+from scipy.ndimage import distance_transform_edt
+from prob_sampling_utils import gaussian_map, combine_log_blend, forward_probability_map, combine_multiply
 
 
 class CarEnv(gym.Env):
@@ -18,16 +23,18 @@ class CarEnv(gym.Env):
     Custom Gym environment for a car.
     """
 
-    def __init__(self, dt=0.02, drone_radius=0.1, maze_map=None,collision_checking=True):
+    def __init__(self, lidar2dsim: Lidar2DSim = Lidar2DSim(), dt=0.02, drone_radius=0.1, maze_map=None,
+                 collision_checking=True):
         super(CarEnv, self).__init__()
 
         # Simulation parameters
+        self.lidar2dsim = lidar2dsim
         self.dt = 1.0 / 50.0  # 50 Hz
         self.current_step = 0
         self.collision_checking = collision_checking
 
         # Car parameters
-        self.ball_radius = drone_radius #*0.1 # changed for real world experiment
+        self.ball_radius = drone_radius  #*0.1 # changed for real world experiment
 
         # Initialize the bicycle model
         self.model, self.constraints = bicycle_model()
@@ -36,7 +43,7 @@ class CarEnv(gym.Env):
 
         # Define car parameters
         self.car_length = 0.35  #0.2
-        self.car_width = 0.2    #0.07
+        self.car_width = 0.2  #0.07
         self.m = 0.043  # mass [kg]
         self.C1 = 0.5  # cornering stiffness factor
         self.C2 = 15.5  # cornering stiffness factor
@@ -44,8 +51,6 @@ class CarEnv(gym.Env):
         self.Cm2 = 0.05  # drive force speed-proportional factor
         self.Cr0 = 0.011  # rolling resistance constant
         self.Cr2 = 0.006  # quadratic rolling resistance factor
-
-        self.max_speed = 10 # Maximum speed [m/s]
 
         # Define action and observation spaces
         self.action_space = spaces.Box(
@@ -60,7 +65,6 @@ class CarEnv(gym.Env):
             dtype=np.float32
         )
         # [Throttle/brake derivative command, Steering angle derivative command]
-
         self.observation_space = spaces.Box(
             low=-np.inf,  # Adjust this as needed based on your model's state bounds
             high=np.inf,  # Adjust this as needed based on your model's state bounds
@@ -71,7 +75,7 @@ class CarEnv(gym.Env):
 
         # Initial state of the system
         self.v_xy = True  # use v_xy instead of v and theta
-        self.state = self.model.x0
+        self._state = self.model.x0
 
         self._maze_map = maze_map
         self._maze_height = 1
@@ -89,12 +93,46 @@ class CarEnv(gym.Env):
         # Rendering objects
         self.fig = None
         self.ax = None
-        plt.ion()  # Enable interactive mode
+        # plt.ion()  # Enable interactive mode
+        self.prior = distance_transform_edt(1 - self._maze_map)
+        self.prior = self.prior / np.sum(self.prior)
+        start_pos_rowcol = self.cell_xy_to_rowcol(self.state[:2])
+        goal_pos_rowcol = self.cell_xy_to_rowcol(self.goal[:2])
+        self.gaussian_pdf, _, _ = gaussian_map(start_pos_rowcol, goal_pos_rowcol)
+        self.prob_map = combine_log_blend(self.prior, self.gaussian_pdf)
+        # self.prob_map = self.prior
 
     @property
     def maze_map(self) -> List[List[Union[str, int]]]:
         """Returns the list[list] data structure of the maze."""
         return self._maze_map
+
+    @maze_map.setter
+    def maze_map(self, new_maze_map):
+        self._maze_map = new_maze_map
+        self.prior = distance_transform_edt(1 - new_maze_map)
+        self.prior = self.prior / self.prior.sum()
+        # self.prob_map = self.prior
+
+        start_pos_rowcol = self.cell_xy_to_rowcol(self.state[:2])[::-1]
+        goal_pos_rowcol = self.cell_xy_to_rowcol(self.goal[:2])[::-1]
+        self.gaussian_pdf, _, _ = gaussian_map(start_pos_rowcol, goal_pos_rowcol)
+        self.prob_map = combine_log_blend(self.prior, self.gaussian_pdf)
+
+    def update_prob_map_by_loc(self):
+        # print(f"Curr State: {self.state[:2]}, Goal State: {self.goal[:2]}")
+        start_pos_rowcol = self.cell_xy_to_rowcol(self.state[:2])[::-1]
+        goal_pos_rowcol = self.cell_xy_to_rowcol(self.goal[:2])[::-1]
+        # print(f"Curr State: {start_pos_rowcol}, Goal State: {goal_pos_rowcol}")
+        self.gaussian_pdf, _, _ = gaussian_map(start_pos_rowcol, goal_pos_rowcol)
+        # pdf_angle = forward_probability_map(self._maze_map, np.append(start_pos_rowcol, -self.state[2]))
+        self.prob_map = combine_log_blend(self.prior, self.gaussian_pdf)
+        # plt.figure()
+        # plt.imshow(self.prob_map, origin='lower', extent=[0, self.prob_map.shape[0], 0, self.prob_map.shape[1]])
+        # plt.scatter(start_pos_rowcol[0], start_pos_rowcol[1], marker='d')
+        # plt.scatter(goal_pos_rowcol[0], goal_pos_rowcol[1], marker='v')
+        # plt.show()
+
 
     @property
     def maze_size_scaling(self) -> float:
@@ -120,6 +158,26 @@ class CarEnv(gym.Env):
         """Returns the x coordinate of the center of the maze in the MuJoCo simulation"""
         return self._y_map_center
 
+    @property
+    def state(self):
+        """
+        Returns: the current state of the car
+        """
+        return self._get_obs()
+
+    def is_done(self, curr_state):
+        """
+        Returns: True if the car reached the goal state.
+        """
+        orig_state = self._state
+        self._state = curr_state
+        res = self._check_done()
+        self._state = orig_state
+        return res
+
+    def reset_done(self):
+        self.done = False
+
     def cell_rowcol_to_xy(self, rowcol_pos: np.ndarray) -> np.ndarray:
         """Converts a cell index `(i,j)` to x and y coordinates in the MuJoCo simulation"""
         x = (rowcol_pos[1] + 0.5) * self.maze_size_scaling - self.x_map_center
@@ -127,11 +185,15 @@ class CarEnv(gym.Env):
 
         return np.array([x, y])
 
-    def cell_xy_to_rowcol(self, xy_pos: np.ndarray) -> np.ndarray:
+    def cell_xy_to_rowcol(self, xy_pos: np.ndarray, floor_enable=True) -> np.ndarray:
         """Converts a cell x and y coordinates to `(i,j)`"""
-        i = math.floor((self.y_map_center - xy_pos[1]) / self.maze_size_scaling)
-        j = math.floor((xy_pos[0] + self.x_map_center) / self.maze_size_scaling)
-        return np.array([i, j])
+        i = (self.y_map_center - xy_pos[1]) / self.maze_size_scaling
+        j = (xy_pos[0] + self.x_map_center) / self.maze_size_scaling
+        ret = np.array([i, j])
+        return np.floor(ret) if floor_enable else ret
+        # i = math.floor()
+        # j = math.floor()
+        # return np.array([i, j])
 
     def reset(self,
               *,
@@ -143,7 +205,7 @@ class CarEnv(gym.Env):
         """
         # Initial state: random position, zero velocity, neutral orientation
         # self.current_pose = np.array([.0, .0, .0, .0, .0, .0])
-        self.state = np.zeros(self.model.x.shape[0], dtype=np.float32)
+        self._state = np.zeros(self.model.x.shape[0], dtype=np.float32)
         # self.state[0:2] = 0  # random position
         # self.state[2] = 0.5  # initial height
         # self.state[3:6] = 0  # zero velocity
@@ -155,9 +217,9 @@ class CarEnv(gym.Env):
                 self.goal = self.cell_rowcol_to_xy(options["goal_cell"])
 
             if "reset_cell" in options and options["reset_cell"] is not None:
-                self.state[0:2] = self.cell_rowcol_to_xy(options["reset_cell"])
+                self._state[0:2] = self.cell_rowcol_to_xy(options["reset_cell"])
             if "reset_deg" in options and options["reset_deg"] is not None:
-                self.state[2] = np.deg2rad(options["reset_deg"])
+                self._state[2] = np.deg2rad(options["reset_deg"])
         self.current_step = 0
         self.done = False
         self.terminated = False
@@ -184,7 +246,7 @@ class CarEnv(gym.Env):
         if not self.done and not self.terminated:
 
             # Update state using drone dynamics
-            self.state = self._update_state(self.state, action)
+            self._state = self._update_state(self._state, action)
 
             # Calculate reward
             reward = self._calculate_reward()
@@ -195,7 +257,7 @@ class CarEnv(gym.Env):
 
             # check if terminated (due to collision)
             if self.collision_checking:
-                collision = is_colliding_car(self.state[:3], self.maze_map)
+                collision = is_colliding_car(self._state[:3], self.maze_map)
 
             if collision:
                 reward = -1.0
@@ -239,7 +301,7 @@ class CarEnv(gym.Env):
         #     v_y = state[3]
         #     state[2] = np.arctan2(v_y, v_x)
         #     state[3] = np.sqrt(v_x ** 2 + v_y ** 2)
-        self.state = state
+        self._state = state
 
     def _get_obs(self):
         """
@@ -249,7 +311,7 @@ class CarEnv(gym.Env):
         #     'observation': self.state.copy(),
         #     'desired_goal': self.goal.copy(),
         # }
-        state = self.state.copy()
+        state = self._state.copy()
         # if self.v_xy:
         #     theta = state[2]
         #     v = state[3]
@@ -272,7 +334,7 @@ class CarEnv(gym.Env):
         """
         Check whether the episode is done.
         """
-        position = self.state[0:2]
+        position = self._state[0:2]
         distance_to_goal = np.linalg.norm(position - self.goal)
 
         # End the episode if the drone is close enough to the goal or max steps exceeded
@@ -295,7 +357,7 @@ class CarEnv(gym.Env):
         Returns:
         - new_state: np.ndarray, the updated state
         """
-        state = self.state
+        state = self._state
 
         # Ensure the action is within the action space bounds
         action = np.clip(action, self.action_space.low, self.action_space.high)
@@ -319,9 +381,8 @@ class CarEnv(gym.Env):
         # Integrate state using Euler's method
         next_state = state + self.dt * state_dot
 
-        next_state[3] = np.clip(next_state[3], 0, self.max_speed)  # Limit speed to max_speed
         # Update state
-        self.state = next_state
+        self._state = next_state
 
         # Return step information
         return next_state
@@ -339,7 +400,7 @@ class CarEnv(gym.Env):
     def _draw_car(self):
 
         # Extract car position and orientation
-        x, y, psi = self.state[0], self.state[1], self.state[2]
+        x, y, psi = self._state[0], self._state[1], self._state[2]
 
         # Calculate box corners
         car_corners = np.array([
@@ -372,7 +433,7 @@ class CarEnv(gym.Env):
         direction_y = np.sin(psi) * self.car_length / 2
         self.ax.quiver(
             x, y, 0, direction_x, direction_y, 0,
-             color='red'
+            color='red'
         )
 
         # self.ax.bar3d(
@@ -388,7 +449,6 @@ class CarEnv(gym.Env):
         #     direction_x, direction_y, 0,  # Direction of the vector
         #     length=1.0, color='red', arrow_length_ratio=0.2
         # )
-
 
 
 #
@@ -543,7 +603,7 @@ def bicycle_model():
     constraint.expr = vertcat(a_long, a_lat, D_sym, delta_sym)
     constraint.alat = Function("a_lat", [x, u], [a_lat])
 
-    # Save parameters in a small container
+    # Save parameters in a small container if you wish
     params = types.SimpleNamespace()
     params.m = m
     params.C1 = C1

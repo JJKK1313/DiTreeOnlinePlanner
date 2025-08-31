@@ -3,22 +3,115 @@ import math
 import numpy as np
 from PIL import Image
 
-from ManiCM.diffusion_tree.common.se3_utils import q_to_rot_mat_np
+from common.se3_utils import q_to_rot_mat_np
 
 
+class Forest:
+    def __init__(self, width, length, trees):
+        """
+        Initialize a Forest object.
+
+        Args:
+            width (int): The width of the map.
+            length (int): The length of the map.
+        """
+        self.width = width
+        self.length = length
+        self.trees = []
+
+
+def load_forest(filename):
+    """
+    Load tree positions and metadata from a CSV file.
+
+    Args:
+        filename (str): Name of the file to load the positions from.
+
+    Returns:
+        tuple: (length, width, tree_radius, tree_positions) where tree_positions is a list of (x, y) tuples.
+    """
+    with open(filename, mode='r') as file:
+        reader = csv.reader(file)
+        rows = list(reader)
+        # Read metadata
+        length, width, tree_radius = map(float, rows[0])
+        # Read tree positions
+        tree_positions = [(float(x), float(y)) for x, y in rows[1:]]
+
+        # forest = np.float32(tree_positions)
+        # maze = self.create_tree_grid(tree_positions, length, width, self.resolution, tree_radius)
+        # rows = len(self.maze)
+        # cols = len(self.maze[0]) if self.rows > 0 else 0
+        # valid_cells.clear()
+        #
+        # for i in range(self.rows):
+        #     for j in range(self.cols):
+        #         if self.maze[i][j] == 0:
+        #             self.valid_cells.append((i, j))
+    return length, width, tree_radius, tree_positions
+
+
+def create_tree_grid(tree_positions, length, width, resolution, tree_radius, dilation=1):
+    """
+    Create a grid representation of the map and fill cells containing trees.
+
+    Args:
+        tree_positions (list): List of (x, y) positions of trees.
+        length (float): Length of the map (x-dimension).
+        width (float): Width of the map (y-dimension).
+        resolution (float): Grid cell size.
+        tree_radius (float): Radius of the trees.
+
+    Returns:
+        np.ndarray: 2D grid array where 1 represents a cell containing part of a tree.
+    """
+    # added dilation to avoid collisions
+    tree_radius *= dilation
+    grid_shape = (int(width / resolution), int(length / resolution))
+    grid = np.zeros(grid_shape, dtype=int)
+
+    radius_in_cells = int(math.ceil(tree_radius / resolution))
+
+    for x, y in tree_positions:
+        center_row = int(y / resolution)
+        center_col = int(x / resolution)
+
+        for row_offset in range(-radius_in_cells, radius_in_cells + 1):
+            for col_offset in range(-radius_in_cells, radius_in_cells + 1):
+                row = center_row + row_offset
+                col = center_col + col_offset
+
+                if 0 <= row < grid_shape[0] and 0 <= col < grid_shape[1]:
+                    cell_center_x = (col + 0.5) * resolution
+                    cell_center_y = (row + 0.5) * resolution
+                    distance = math.sqrt((cell_center_x - x) ** 2 + (cell_center_y - y) ** 2)
+
+                    if distance <= tree_radius:
+                        grid[row, col] = 1
+
+    return grid
+
+
+cc_calls = 0
 
 
 def print_calls():
     global cc_calls
     print(cc_calls)
 
+
 def is_colliding_car(state, maze_map, ball_radius=0.1, car_length=0.15):
+    global cc_calls
+    cc_calls += 1
+    # if cc_calls % 100 == 0:
+    #     print(cc_calls)
+    # represent car using two balls, car_length apart
     offset = (car_length * 0.5) * np.array([np.cos(state[2]), np.sin(state[2])])
     ball_centers = np.array([
         state[:2] + offset,  # Front ball
         state[:2] - offset  # Rear ball
     ])
-    collision = is_colliding_parallel(ball_centers,maze_map,ball_radius=ball_radius)
+    collision = is_colliding_parallel(ball_centers, maze_map, ball_radius=ball_radius)
     return collision.any()
 
 
@@ -30,19 +123,20 @@ def is_colliding_drone(state, maze_map, drone_radius=0.1):
     return collision
 
 
-def is_colliding_ant(state, maze_map, ant_radius=1,map_scale=1):
-    rotation_matrix = q_to_rot_mat_np(state[3:7])   # antmaze uses [x,y,z,w]
+def is_colliding_ant(state, maze_map, ant_radius=1, map_scale=1):
+    rotation_matrix = q_to_rot_mat_np(state[3:7])  # antmaze uses [x,y,z,w]
     z_body = rotation_matrix[:, 2]  # Get the z-axis of the body frame
-    cos_theta = z_body[2]  # Cosine of the angle between the z-axis and the global z-axis, equivalent to dot(z_body, [0, 0, 1])
+    cos_theta = z_body[
+        2]  # Cosine of the angle between the z-axis and the global z-axis, equivalent to dot(z_body, [0, 0, 1])
     if cos_theta < 0:
         # ant is upside down
         collision = True
     else:
-        collision = is_colliding_maze(state[0:3], maze_map,map_scale, ant_radius)
+        collision = is_colliding_maze(state[0:3], maze_map, map_scale, ant_radius)
     return collision
 
 
-def is_colliding_maze(state, maze_grid,maze_size_scaling=1, ball_radius=0.1):
+def is_colliding_maze(state, maze_grid, maze_size_scaling=1, ball_radius=0.1):
     """
     Check if the ball with radius collides with any walls in the maze, including side and diagonal checks.
 
@@ -161,6 +255,9 @@ def is_colliding_parallel(states, maze_grid, maze_size_scaling=1, ball_radius=0.
     out_of_bounds_idx = (rows < 0) | (rows >= map_length) | (cols < 0) | (cols >= map_width)
     collision = out_of_bounds_idx
 
+    if np.any(collision):
+        return collision
+
     # Check if inside a wall
     inside_wall_idx = maze_grid[rows, cols] == 1
 
@@ -225,14 +322,144 @@ def is_colliding_parallel(states, maze_grid, maze_size_scaling=1, ball_radius=0.
     for corner_x, corner_y, check_i, check_j in corners:
         dist_to_corner = np.hypot(corner_x - agent_x, corner_y - agent_y)
         invalid_cell = (check_i < 0) | (check_i >= map_length) | (check_j < 0) | (check_j >= map_width)
-        check_i = np.clip(check_i,0,map_length-1)
-        check_j = np.clip(check_j,0,map_width-1)
+        check_i = np.clip(check_i, 0, map_length - 1)
+        check_j = np.clip(check_j, 0, map_length - 1)
         collision = collision | invalid_cell | (dist_to_corner < ball_radius) & ((maze_grid[check_i, check_j] == 1))
 
     return collision
 
 
+# def create_local_map(global_map, x, y, theta, map_size, scale, s_global, map_center):
+#     '''
+#     Creates a local occupancy map from the robot's perspective.
+#
+#     Parameters:
+#     - global_map: 2D numpy array representing the global occupancy grid map.
+#     - x, y: Robot's position in global coordinates (meters).
+#     - theta: Robot's heading (radians), where 0 means facing the positive x-direction.
+#     - map_size: Tuple (N, N), desired size of the local map in pixels.
+#     - scale: Resolution of the local map (meters per pixel).
+#     - s_global: Resolution of the global map (meters per pixel).
+#
+#     Returns:
+#     - local_map: 2D numpy array representing the local occupancy map.
+#     '''
+#     # if map size is a list choose the first element
+#     if isinstance(map_size, (int, float)):
+#         N = map_size
+#     else:
+#         N = map_size[0]  # Size of the local map
+#     L = N * scale    # Physical length of the local map (meters)
+#
+#     # Create local grid coordinates centered around the robot
+#     xs = np.linspace(-L/2 + scale/2, L/2 - scale/2, N)
+#     ys = np.linspace(-L/2 + scale/2, L/2 - scale/2, N)
+#     x_local, y_local = np.meshgrid(xs, ys)
+#
+#     # Flatten the coordinate grids for vectorized computation
+#     x_local_flat = x_local.flatten()
+#     y_local_flat = y_local.flatten()
+#
+#     # Rotation matrix components
+#     cos_theta = np.cos(theta)
+#     sin_theta = np.sin(theta)
+#
+#     # Transform local coordinates to global coordinates
+#     x_global = cos_theta * x_local_flat - sin_theta * y_local_flat + x
+#     y_global = sin_theta * x_local_flat + cos_theta * y_local_flat + y
+#
+#     # Convert global coordinates to grid indices
+#     # x_indices = np.round(x_global / s_global).astype(int)
+#     # y_indices = np.round(y_global / s_global).astype(int)
+#
+#     # using original env method to get indices
+#     y_indices = np.floor((map_center[1] - y_global) / s_global).astype(int)
+#     x_indices = np.floor((x_global + map_center[0]) / s_global).astype(int)
+#
+#     # Handle boundary conditions to prevent index out of bounds
+#     x_indices = np.clip(x_indices, 0, global_map.shape[1] - 1)
+#     y_indices = np.clip(y_indices, 0, global_map.shape[0] - 1)
+#
+#     # Extract occupancy values from the global map
+#     occupancy_values = global_map[y_indices, x_indices]
+#
+#     # Reshape the occupancy values to form the local map
+#     local_map = occupancy_values.reshape(N, N)
+#
+#     return local_map
+
 def create_local_map(global_map, x, y, theta, map_size, scale, s_global, map_center):
+    """
+    Creates a local occupancy map from the robot's perspective.
+
+    Parameters:
+    - global_map: 2D numpy array representing the global occupancy grid map.
+    - x, y: Robot's position in global coordinates (meters).
+    - theta: Robot's heading (radians), where 0 means facing the positive x-direction.
+    - map_size: Tuple (N, N), desired size of the local map in pixels.
+    - scale: Resolution of the local map (meters per pixel).
+    - s_global: Resolution of the global map (meters per pixel).
+
+    Returns:
+    - local_map: 2D numpy array representing the local occupancy map.
+    """
+
+    # if x is scalar, convert to numpy array
+    if isinstance(x, (int, float, np.generic)):
+        x = np.array([x])
+        y = np.array([y])
+        theta = np.array([theta])
+
+    K = len(x)  # Number of robots (batch size)
+
+    # Determine the size of the local map
+    if isinstance(map_size, (int, float)):
+        N = int(map_size)
+    else:
+        N = int(map_size[0])  # Size of the local map (N x N)
+    L = N * scale  # Physical length of the local map (meters)
+
+    # Create local grid coordinates centered around the robot
+    xs = np.linspace(-L / 2 + scale / 2, L / 2 - scale / 2, N)
+    ys = np.linspace(-L / 2 + scale / 2, L / 2 - scale / 2, N)
+    x_local, y_local = np.meshgrid(xs, ys)
+
+    # Flatten the coordinate grids for vectorized computation
+    x_local_flat = x_local.flatten()
+    y_local_flat = y_local.flatten()
+
+    # Expand local coordinates to batch size
+    x_local_flat_expanded = np.tile(x_local_flat, (K, 1))  # Shape (K, N*N)
+    y_local_flat_expanded = np.tile(y_local_flat, (K, 1))  # Shape (K, N*N)
+
+    # Expand robot positions and orientations to match local coordinates
+    x_expanded = x[:, np.newaxis]  # Shape (K, 1)
+    y_expanded = y[:, np.newaxis]  # Shape (K, 1)
+    cos_theta = np.cos(theta)[:, np.newaxis]  # Shape (K, 1)
+    sin_theta = np.sin(theta)[:, np.newaxis]  # Shape (K, 1)
+
+    # Compute global coordinates for all robots in the batch (vectorized)
+    x_global_flat = cos_theta * x_local_flat_expanded - sin_theta * y_local_flat_expanded + x_expanded  # Shape (K, N*N)
+    y_global_flat = sin_theta * x_local_flat_expanded + cos_theta * y_local_flat_expanded + y_expanded  # Shape (K, N*N)
+
+    # using original env method to get indices
+    y_indices = np.floor((map_center[1] - y_global_flat) / s_global).astype(int)
+    x_indices = np.floor((x_global_flat + map_center[0]) / s_global).astype(int)
+
+    # Handle boundary conditions to prevent index out of bounds
+    x_indices = np.clip(x_indices, 0, global_map.shape[1] - 1)  # Assuming shape of global_maps is (K, H, W)
+    y_indices = np.clip(y_indices, 0, global_map.shape[0] - 1)
+
+    # Extract occupancy values from the global maps for each robot (vectorized)
+    occupancy_values = global_map[y_indices, x_indices]  # Shape (K, N*N)
+
+    # Reshape the occupancy values to form the local maps for each robot
+    local_maps = occupancy_values.reshape(K, N, N)  # Shape (K, N, N)
+
+    return local_maps
+
+
+def create_tree_local_map(tree_positions, tree_radius, x, y, theta, local_map_size, scale, dilation=1):
     '''
     Creates a local occupancy map from the robot's perspective.
 
@@ -303,6 +530,30 @@ def create_local_map(global_map, x, y, theta, map_size, scale, s_global, map_cen
     return local_maps
 
 
+def convert_forests_to_maps(forests_folder):
+    '''
+    Converts the forest data to a 2D occupancy grid map.
+
+    Parameters:
+    - forests_folder: Path to the folder containing the forest data.
+
+    Returns:
+    - forest_maps: List of 2D numpy arrays representing the forest maps.
+    '''
+    for i in range(10):
+        # Load the forest data
+        length, width, tree_radius, tree_positions = load_forest(forests_folder + f'/forest_{i}.csv')
+
+        # Create the forest map
+        forest_map = create_tree_grid(tree_positions, length, width, 0.2,
+                                      tree_radius)
+
+        # save grid as csv
+        np.savetxt(forests_folder + f'/forest_{i}_grid.csv', forest_map, delimiter=',')
+
+    return forest_map
+
+
 def png_to_binary_csv(image_path, csv_path, downsample_factor=1):
     """
     Converts a PNG image to a binary CSV file.
@@ -331,11 +582,13 @@ def png_to_binary_csv(image_path, csv_path, downsample_factor=1):
 
     print(f"Binary CSV saved to {csv_path}")
 
+
 if __name__ == "__main__":
     # Test the is_colliding function
     import gymnasium as gym
     import matplotlib.pyplot as plt
     import torch
+
     # from local_map_encoder import GridEncoder, MaxEncoder
 
     png_to_binary_csv("../maps/mazes/boxes.png.", "../maps/mazes/boxes.csv")
