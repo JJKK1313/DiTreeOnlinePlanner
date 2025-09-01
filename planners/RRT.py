@@ -147,6 +147,7 @@ class RRT_Planner(BasePlanner):
             curr_node.num_visit += 1
             goal = sample_node[0, :2] # if random.random() > self.goal_conditioning_bias else self.goal_state[:2]
             for j in range(edge_length // self.action_horizon):
+                iter_num += 1
                 yaw = curr_state[2]
                 local_map = create_local_map(self.maze, curr_state[0],
                                              curr_state[1], yaw,
@@ -199,20 +200,21 @@ class RRT_Planner(BasePlanner):
                         print(f"\rIteration: {iter_num}, Elapsed Time: {(curr_time - start_time):.2f} seconds, "
                               f"Diffusion Time: {total_diffusion_time:.2f} seconds", end="")
                     self.env.prob_map = orig_prob_map
-                    self.visualize_tree(filename=f'plan_{self.plan_count}_iter_{iter_num}', debug=self._debug,
-                                        goal_state=sample_node[0], has_obs_ahead_list=has_obstacle_ahead.copy())
+                    # self.visualize_tree(filename=f'plan_{self.plan_count}_iter_{iter_num}', debug=self._debug,
+                    #                     goal_state=sample_node[0], has_obs_ahead_list=has_obstacle_ahead.copy())
                     return self.handle_goal_reached(new_node, iter_num, start_time)
 
-            iter_num += 1
             curr_time = time.time()
         curr_time = time.time()
         if self.verbose:
             print(f"\rIteration: {iter_num}, Elapsed Time: {(curr_time - start_time):.2f} seconds, "
                   f"Diffusion Time: {total_diffusion_time:.2f} seconds", end="")
         if np.all(has_obstacle_ahead):
-            self.visualize_tree(filename=f'plan_{self.plan_count}_iter_{iter_num}', debug=self._debug,
-                                has_obs_ahead_list=has_obstacle_ahead.copy())
+            # self.visualize_tree(filename=f'plan_{self.plan_count}_iter_{iter_num}', debug=self._debug,
+            #                     has_obs_ahead_list=has_obstacle_ahead.copy())
             self.env.prob_map = orig_prob_map
+            self.results["iterations"] = iter_num
+            self.results["number_of_nodes"] = len(self.node_list)
             return None, None
 
         node_list_wo_start = self.node_list[1:]
@@ -232,8 +234,8 @@ class RRT_Planner(BasePlanner):
             # if it has obstacle then add big cost
             nearest_sample_to_goal = node_list_wo_start[np.argmax(nn_index_along_main_path)]
         self.env.prob_map = orig_prob_map
-        self.visualize_tree(filename=f'plan_{self.plan_count}_iter_{iter_num}', debug=self._debug,
-                            goal_state=sample_node[0], has_obs_ahead_list=has_obstacle_ahead.copy())
+        # self.visualize_tree(filename=f'plan_{self.plan_count}_iter_{iter_num}', debug=self._debug,
+        #                     goal_state=sample_node[0], has_obs_ahead_list=has_obstacle_ahead.copy())
         return self.handle_goal_reached(nearest_sample_to_goal, iter_num, start_time)
 
 
