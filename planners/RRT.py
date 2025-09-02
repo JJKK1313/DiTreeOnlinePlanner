@@ -93,9 +93,9 @@ class RRT_Planner(BasePlanner):
                 obstacle_in_path_loc_idx = idx
                 break
         cp = main_path_points_rowcol[obstacle_in_path_loc_idx]
-        while self.maze[cp[0], cp[1]] == 1:
-            obstacle_in_path_loc_idx += 1
+        while self.maze[cp[0], cp[1]] == 1 and obstacle_in_path_loc_idx < len(main_path_points_rowcol):
             cp = main_path_points_rowcol[obstacle_in_path_loc_idx]
+            obstacle_in_path_loc_idx += 1
         # plt.figure()
         # plt.imshow(self.maze, origin='lower', extent=[0, self.maze.shape[0], 0, self.maze.shape[1]])
         # for i, s in enumerate(main_path_array[obstacle_in_path_loc_idx:]):
@@ -119,19 +119,19 @@ class RRT_Planner(BasePlanner):
         iter_num = 0
         orig_prob_map = self.env.prob_map.copy()
         has_obstacle_ahead = []
-        self.env.update_prob_map_by_loc()
-        remain_init_path = self.extract_path_after_obstacle() if self.init_main_path is not None else None
+        # self.env.update_prob_map_by_loc()
+        # remain_init_path = self.extract_path_after_obstacle() if self.init_main_path is not None else None
         sample_node = [None]
         while (curr_time - start_time) < self.time_budget:
             if self.verbose:
                 print(f"\rIteration: {iter_num}, Elapsed Time: {(curr_time - start_time):.2f} seconds", end="")
-            if remain_init_path is not None:
-                node_idx = np.random.choice(np.arange(len(remain_init_path)))
+            # if remain_init_path is not None:
+            #     node_idx = np.random.choice(np.arange(len(remain_init_path)))
                 # 40% chance for exploration over exploitation
-                sample_node = self.random_node_sample() if random.random() < 0.4 else remain_init_path[node_idx][
-                    np.newaxis]
-            else:
-                sample_node = self.random_node_sample()  # sample a random state.
+                # sample_node = self.random_node_sample() if random.random() < 0.4 else remain_init_path[node_idx][
+                #     np.newaxis]
+            # else:
+            sample_node = self.random_node_sample()  # sample a random state.
 
             curr_node = self.nearest_node(sample_node)
             curr_state = curr_node.state
@@ -145,7 +145,7 @@ class RRT_Planner(BasePlanner):
                 np.clip(curr_node.num_visit, 0, len(self.prop_duration_schedule) - 1)
             ]
             curr_node.num_visit += 1
-            goal = sample_node[0, :2] # if random.random() > self.goal_conditioning_bias else self.goal_state[:2]
+            goal = sample_node[0, :2] if random.random() > self.goal_conditioning_bias else self.goal_state[:2]
             for j in range(edge_length // self.action_horizon):
                 iter_num += 1
                 yaw = curr_state[2]

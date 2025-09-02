@@ -277,6 +277,10 @@ if __name__ == '__main__':
                                                                        scenario=scenario_name,
                                                                        sampling_tech=sampling_tech)
                                 df = pd.concat([df, df_temp]) if df is not None else df_temp
+    df = df.replace('Sampling 1', 'Original+Ref')
+    df = df.replace('Sampling 2', 'OM+Ref')
+    df = df.replace('Sampling 3', 'OM+LB+Ref')
+    df = df.replace('Sampling 4', 'All+EnforceReplan')
     plot_results_summarize_scenarios(df.copy())
     plot_results_success_only(df.copy())
     plot_results(df.copy())

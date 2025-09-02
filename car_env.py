@@ -96,11 +96,11 @@ class CarEnv(gym.Env):
         # plt.ion()  # Enable interactive mode
         self.prior = distance_transform_edt(1 - self._maze_map)
         self.prior = self.prior / np.sum(self.prior)
-        start_pos_rowcol = self.cell_xy_to_rowcol(self.state[:2])
-        goal_pos_rowcol = self.cell_xy_to_rowcol(self.goal[:2])
-        self.gaussian_pdf, _, _ = gaussian_map(start_pos_rowcol, goal_pos_rowcol)
-        self.prob_map = combine_log_blend(self.prior, self.gaussian_pdf)
-        # self.prob_map = self.prior
+        # start_pos_rowcol = self.cell_xy_to_rowcol(self.state[:2])
+        # goal_pos_rowcol = self.cell_xy_to_rowcol(self.goal[:2])
+        # self.gaussian_pdf, _, _ = gaussian_map(start_pos_rowcol, goal_pos_rowcol)
+        # self.prob_map = combine_log_blend(self.prior, self.gaussian_pdf)
+        self.prob_map = self.prior
 
     @property
     def maze_map(self) -> List[List[Union[str, int]]]:
@@ -112,12 +112,12 @@ class CarEnv(gym.Env):
         self._maze_map = new_maze_map
         self.prior = distance_transform_edt(1 - new_maze_map)
         self.prior = self.prior / self.prior.sum()
-        # self.prob_map = self.prior
-
-        start_pos_rowcol = self.cell_xy_to_rowcol(self.state[:2])[::-1]
-        goal_pos_rowcol = self.cell_xy_to_rowcol(self.goal[:2])[::-1]
-        self.gaussian_pdf, _, _ = gaussian_map(start_pos_rowcol, goal_pos_rowcol)
-        self.prob_map = combine_log_blend(self.prior, self.gaussian_pdf)
+        self.prob_map = self.prior
+        #
+        # start_pos_rowcol = self.cell_xy_to_rowcol(self.state[:2])[::-1]
+        # goal_pos_rowcol = self.cell_xy_to_rowcol(self.goal[:2])[::-1]
+        # self.gaussian_pdf, _, _ = gaussian_map(start_pos_rowcol, goal_pos_rowcol)
+        # self.prob_map = combine_log_blend(self.prior, self.gaussian_pdf)
 
     def update_prob_map_by_loc(self):
         # print(f"Curr State: {self.state[:2]}, Goal State: {self.goal[:2]}")

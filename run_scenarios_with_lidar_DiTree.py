@@ -10,9 +10,9 @@ import sys
 from scipy.ndimage import distance_transform_edt
 import matplotlib
 
-USE_AGG = True
-if USE_AGG:  # prevent crashing because of main loop thread with IDE thread.
-    matplotlib.use('Agg')
+# USE_AGG = True
+# if USE_AGG:  # prevent crashing because of main loop thread with IDE thread.
+#     matplotlib.use('Agg')
 # Detect if in debug model
 gettrace = getattr(sys, 'gettrace', None)
 # debug = False
@@ -316,9 +316,22 @@ def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, obstacle_dims=[2
             x_max = min(obstacle_loc_row_col[1] + obstacle_dims[1], maze_data.shape[1])
             maze_data_with_obstacle[y_min:y_max, x_min:x_max] = 1
 
-        plt.figure()
+        # fig, axs = plt.subplots(1, 2, figsize=(8, 6), constrained_layout=True)
+        # plt.subplot(121)
         plt.imshow(2 * maze_data_with_obstacle - maze_data_original, origin='lower',
                    extent=[0, maze_data_original.shape[0], 0, maze_data_original.shape[1]])
+        plt.title("Obstacle Map\n(Green is Known ; Yellow is unknown)")
+        plt.xticks([])
+        plt.yticks([])
+        # plt.subplot(122)
+        # maze_new = distance_transform_edt(1-maze_data_with_obstacle)
+        # maze_new = maze_new/maze_new.sum()
+        # plt.imshow(maze_new, origin='lower',
+        #            extent=[0, maze_data_original.shape[0], 0, maze_data_original.shape[1]])
+        # plt.title("Exact Euclidean Distance Transform")
+        # plt.xticks([])
+        # plt.yticks([])
+        # plt.show()
         plt.savefig(f'{scenario_folder}/Inserted_Obstacle', dpi=200)
 
         # Create planner
@@ -398,99 +411,98 @@ def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, obstacle_dims=[2
             print("Main Path Planning...")
             main_path_array, main_actions = plan_path(planner, curr_state, goal, stats2keep=stats_2_keep,
                                                       time_budget=offline_time_budget)
-            if main_path_array is None:
-                continue
-            planner.init_main_path = main_path_array.copy()
+            if main_path_array is not None:
+                planner.init_main_path = main_path_array.copy()
 
-            if main_actions is None:
-                print('\033[91m', 10 * '*', "Got into a blocked path and cant find a way out!!!", 10 * '*',
-                      '\033[00m')
-            else:
-                # plot_traj(planner, scanned_maze, planner.init_main_path, block=BLOCK_PLOTS, show_plots=SHOW_PLOTS,
-                #           title="Reference Path",
-                #           path=f'{root_folder}/{current_run}/{scenario_name}/Iter_{i + 1}/Ref_Plan')
-                planner.env.reset_done()
-                action_idx = 0
-                trials = 0
-                obstacles_in_way = -1
-                prev_plan_time = time.time()
-                while not planner.env.is_done(curr_state):
-                    if (obstacles_in_way >= 0 or action_idx == main_actions.shape[0]
-                            or (time.time() - prev_plan_time) >= 2):
-                        if obstacles_in_way >= 0:
-                            print("Obstacles in way found!", end=' ')
-                        print("Need new plan...")
-                        main_actions = None  # reset actions
-                        while trials < ALLOWED_TRIALS and main_actions is None:
-                            main_path_array, main_actions = plan_path(planner, curr_state, goal,
-                                                                      stats2keep=stats_2_keep)
-                            if main_actions is None:
-                                print('\033[91m', 10 * '*', "Got into a blocked path and cant find a way out!!!",
-                                      10 * '*', '\033[00m')
-                                trials += 1
-                        if trials >= ALLOWED_TRIALS:
-                            break
-                        trials = 0
-
-                        planner.env.reset_done()
-                        planner.reset(start_state=curr_state, goal_state=goal)
-                        action_idx = 0
-                        # plot_traj(planner, scanned_maze, main_path_array, block=BLOCK_PLOTS, show_plots=SHOW_PLOTS,
-                        #           title="New Main Path",
-                        #           path=f'{scenario_folder}/Iter_{i + 1}/Plan_{planner.plan_count}')
-                        prev_plan_time = time.time()
-                        total_cc += common.map_utils.cc_calls
-
-                    states_of_action = []
-                    planner.env.set_state(curr_state)
+                if main_actions is None:
+                    print('\033[91m', 10 * '*', "Got into a blocked path and cant find a way out!!!", 10 * '*',
+                          '\033[00m')
+                else:
+                    # plot_traj(planner, scanned_maze, planner.init_main_path, block=BLOCK_PLOTS, show_plots=SHOW_PLOTS,
+                    #           title="Reference Path",
+                    #           path=f'{root_folder}/{current_run}/{scenario_name}/Iter_{i + 1}/Ref_Plan')
+                    planner.env.reset_done()
+                    action_idx = 0
+                    trials = 0
                     obstacles_in_way = -1
-                    action_time_count = 0
-                    total_action_time_count = 0
-                    done = False
-                    while (action_idx < main_actions.shape[0] and obstacles_in_way < 0 and not done
-                           and (time.time() - prev_plan_time) < 2) and total_action_time_count < 2:
-                        curr_state_temp, done, _, visited_states = planner.propagate_action_sequence_env(
-                            curr_state, main_actions[action_idx, np.newaxis]
-                        )
-                        if done is None:
-                            print('\033[95m', 10 * '@', "!!!COLLISION DETECTED!!!", 10 * '@', '\033[00m')
-                            print(f"Current action {action_idx} / {main_actions.shape[0]}")
-                            # plot_traj(planner, scanned_maze, executed_path, block=BLOCK_PLOTS,
-                            #           show_plots=SHOW_PLOTS,
-                            #           title="Executed Path - Collision",
-                            #           path=f'{scenario_folder}/Iter_{i + 1}/Collision')
-                            break
-                        if done:
-                            print('\033[95m', 10 * '-', "!!! REACHED GOAL WOOHOO !!!", 10 * '-', '\033[00m')
-                            # plot_traj(planner, scanned_maze, executed_path, block=BLOCK_PLOTS,
-                            #           show_plots=SHOW_PLOTS,
-                            #           title="Executed Path - Reached Goal",
-                            #           path=f'{scenario_folder}/Iter_{i + 1}/ReachedGoal')
+                    prev_plan_time = time.time()
+                    while not planner.env.is_done(curr_state):
+                        if (obstacles_in_way >= 0 or action_idx == main_actions.shape[0]):
+                                # or (time.time() - prev_plan_time) >= 2):
+                            if obstacles_in_way >= 0:
+                                print("Obstacles in way found!", end=' ')
+                            print("Need new plan...")
+                            main_actions = None  # reset actions
+                            while trials < ALLOWED_TRIALS and main_actions is None:
+                                main_path_array, main_actions = plan_path(planner, curr_state, goal,
+                                                                          stats2keep=stats_2_keep)
+                                if main_actions is None:
+                                    print('\033[91m', 10 * '*', "Got into a blocked path and cant find a way out!!!",
+                                          10 * '*', '\033[00m')
+                                    trials += 1
+                            if trials >= ALLOWED_TRIALS:
+                                break
+                            trials = 0
 
-                        states_of_action.append(visited_states[0, 1, :])
-                        executed_path.append(visited_states[0, 1, :])
-                        executed_actions.append(main_actions[action_idx])
-                        curr_state = curr_state_temp
+                            planner.env.reset_done()
+                            planner.reset(start_state=curr_state, goal_state=goal)
+                            action_idx = 0
+                            # plot_traj(planner, scanned_maze, main_path_array, block=BLOCK_PLOTS, show_plots=SHOW_PLOTS,
+                            #           title="New Main Path",
+                            #           path=f'{scenario_folder}/Iter_{i + 1}/Plan_{planner.plan_count}')
+                            prev_plan_time = time.time()
+                            total_cc += common.map_utils.cc_calls
+
+                        states_of_action = []
                         planner.env.set_state(curr_state)
-                        action_idx += 1
-                        action_time_count += planner.env.dt
-                        total_action_time_count += planner.env.dt
-                        if action_time_count > planner.env.lidar2dsim.scan_time:
-                            # print("Scanning area...")
-                            scan_and_update_maze(planner, maze_data, maze_data_with_obstacle, scanned_maze)
-                            # print("Check path crossing obstacles OR actions are done...")
-                            obstacles_in_way = check_no_obstacles_in_path(planner, scanned_maze, main_path_array)
-                            action_time_count = 0
+                        obstacles_in_way = -1
+                        action_time_count = 0
+                        total_action_time_count = 0
+                        done = False
+                        while (action_idx < main_actions.shape[0] and obstacles_in_way < 0 and not done):
+                               # and (time.time() - prev_plan_time) < 2) and total_action_time_count < 2:
+                            curr_state_temp, done, _, visited_states = planner.propagate_action_sequence_env(
+                                curr_state, main_actions[action_idx, np.newaxis]
+                            )
+                            if done is None:
+                                print('\033[95m', 10 * '@', "!!!COLLISION DETECTED!!!", 10 * '@', '\033[00m')
+                                print(f"Current action {action_idx} / {main_actions.shape[0]}")
+                                # plot_traj(planner, scanned_maze, executed_path, block=BLOCK_PLOTS,
+                                #           show_plots=SHOW_PLOTS,
+                                #           title="Executed Path - Collision",
+                                #           path=f'{scenario_folder}/Iter_{i + 1}/Collision')
+                                break
+                            if done:
+                                print('\033[95m', 10 * '-', "!!! REACHED GOAL WOOHOO !!!", 10 * '-', '\033[00m')
+                                # plot_traj(planner, scanned_maze, executed_path, block=BLOCK_PLOTS,
+                                #           show_plots=SHOW_PLOTS,
+                                #           title="Executed Path - Reached Goal",
+                                #           path=f'{scenario_folder}/Iter_{i + 1}/ReachedGoal')
 
-                    if done is None:
-                        break
+                            states_of_action.append(visited_states[0, 1, :])
+                            executed_path.append(visited_states[0, 1, :])
+                            executed_actions.append(main_actions[action_idx])
+                            curr_state = curr_state_temp
+                            planner.env.set_state(curr_state)
+                            action_idx += 1
+                            action_time_count += planner.env.dt
+                            total_action_time_count += planner.env.dt
+                            if action_time_count > planner.env.lidar2dsim.scan_time:
+                                # print("Scanning area...")
+                                scan_and_update_maze(planner, maze_data, maze_data_with_obstacle, scanned_maze)
+                                # print("Check path crossing obstacles OR actions are done...")
+                                obstacles_in_way = check_no_obstacles_in_path(planner, scanned_maze, main_path_array)
+                                action_time_count = 0
 
-                    if action_idx < main_actions.shape[0]:
-                        print('\033[97m Found obstacle in main path!\033[00m')
-                    print(f"Current action {action_idx} / {main_actions.shape[0]}")
-                    # plot_traj(planner, scanned_maze, executed_path, block=BLOCK_PLOTS, show_plots=SHOW_PLOTS,
-                    #           title='Robot Path until now',
-                    #           path=f'{root_folder}/{current_run}/{scenario_name}/Iter_{i + 1}/RobotStatus_{planner.plan_count}')
+                        if done is None:
+                            break
+
+                        if action_idx < main_actions.shape[0]:
+                            print('\033[97m Found obstacle in main path!\033[00m')
+                        print(f"Current action {action_idx} / {main_actions.shape[0]}")
+                        # plot_traj(planner, scanned_maze, executed_path, block=BLOCK_PLOTS, show_plots=SHOW_PLOTS,
+                        #           title='Robot Path until now',
+                        #           path=f'{root_folder}/{current_run}/{scenario_name}/Iter_{i + 1}/RobotStatus_{planner.plan_count}')
 
             # Collect statistics
             end_time = time.time()
@@ -503,6 +515,7 @@ def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, obstacle_dims=[2
                       title="Executed Path",
                       path=f'{root_folder}/{current_run}/{scenario_name}/{i + 1}')
             if executed_path is not None:
+                os.makedirs(os.path.join(planner.save_path, planner.scenario_iter_folder_name), exist_ok=True)
                 np.savetxt(
                     os.path.join(planner.save_path, planner.scenario_iter_folder_name, f'path_DP_{i}.csv'),
                     executed_path, fmt='%.6f', delimiter=',')

@@ -178,11 +178,11 @@ class BasePlanner(abc.ABC):
                 q = np.random.uniform(-1, 1, size=(batch_size, 4))
                 return np.concatenate((x, y, z, v, q), axis=1)
             elif 'car' in self.env_id.lower():
-                rows, cols = self.sample_row_col_from_probability_map()
-                x, y = self.env.cell_rowcol_to_xy(np.array([rows[0], cols[0]]))
-                x, y = x[np.newaxis], y[np.newaxis]
-                # x = np.random.uniform(-self.map_width / 2, self.map_width / 2, size=(batch_size, 1))
-                # y = np.random.uniform(-self.map_length / 2, self.map_length / 2, size=(batch_size, 1))
+                # rows, cols = self.sample_row_col_from_probability_map()
+                # x, y = self.env.cell_rowcol_to_xy(np.array([rows[0], cols[0]]))
+                # x, y = x[np.newaxis], y[np.newaxis]
+                x = np.random.uniform(-self.map_width / 2, self.map_width / 2, size=(batch_size, 1))
+                y = np.random.uniform(-self.map_length / 2, self.map_length / 2, size=(batch_size, 1))
                 theta = np.random.uniform(-np.pi, np.pi, size=(batch_size, 1))
                 v = np.random.uniform(-self.max_v, self.max_v, size=(batch_size, 1))
                 throttle = np.random.uniform(-1, 1, size=(batch_size, 1))

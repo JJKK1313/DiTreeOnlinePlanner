@@ -590,4 +590,5 @@ if __name__ == "__main__":
                                cfg_file=cfg_file, total_runs=25, offline_time_budget=60,
                                T=T, K=K,
                                diffusion_sampler_checkpoints=diffusion_sampler_checkpoints)
-    playsound(r'C:\Users\Jonathan\Music\Jon Bellion - All Time Low (Official Music Video).mp3')
+    playsound(r'C:\Users\Jonathan\Music\Jon Bellion - All Time Low (Official Music Video).mp3', block=False)
+    input("Done. Press any key to stop...")
