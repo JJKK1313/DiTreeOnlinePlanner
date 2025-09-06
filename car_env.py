@@ -24,7 +24,7 @@ class CarEnv(gym.Env):
     """
 
     def __init__(self, lidar2dsim: Lidar2DSim = Lidar2DSim(), dt=0.02, drone_radius=0.1, maze_map=None,
-                 collision_checking=True):
+                 collision_checking=True, run_type=0):
         super(CarEnv, self).__init__()
 
         # Simulation parameters
@@ -94,13 +94,20 @@ class CarEnv(gym.Env):
         self.fig = None
         self.ax = None
         # plt.ion()  # Enable interactive mode
+
+        self.run_type = run_type
+
         self.prior = distance_transform_edt(1 - self._maze_map)
         self.prior = self.prior / np.sum(self.prior)
-        # start_pos_rowcol = self.cell_xy_to_rowcol(self.state[:2])
-        # goal_pos_rowcol = self.cell_xy_to_rowcol(self.goal[:2])
-        # self.gaussian_pdf, _, _ = gaussian_map(start_pos_rowcol, goal_pos_rowcol)
-        # self.prob_map = combine_log_blend(self.prior, self.gaussian_pdf)
-        self.prob_map = self.prior
+        if self.run_type < 2:
+            self.prob_map = np.zeros_like(self._maze_map.copy())    # No Use in Original / Original + Ref runs
+        elif self.run_type == 2:  # OM+Ref
+            self.prob_map = self.prior
+        elif self.run_type >= 3:
+            start_pos_rowcol = self.cell_xy_to_rowcol(self.state[:2])
+            goal_pos_rowcol = self.cell_xy_to_rowcol(self.goal[:2])
+            self.gaussian_pdf, _, _ = gaussian_map(start_pos_rowcol, goal_pos_rowcol)
+            self.prob_map = combine_log_blend(self.prior, self.gaussian_pdf)
 
     @property
     def maze_map(self) -> List[List[Union[str, int]]]:
@@ -112,12 +119,13 @@ class CarEnv(gym.Env):
         self._maze_map = new_maze_map
         self.prior = distance_transform_edt(1 - new_maze_map)
         self.prior = self.prior / self.prior.sum()
-        self.prob_map = self.prior
-        #
-        # start_pos_rowcol = self.cell_xy_to_rowcol(self.state[:2])[::-1]
-        # goal_pos_rowcol = self.cell_xy_to_rowcol(self.goal[:2])[::-1]
-        # self.gaussian_pdf, _, _ = gaussian_map(start_pos_rowcol, goal_pos_rowcol)
-        # self.prob_map = combine_log_blend(self.prior, self.gaussian_pdf)
+        if self.run_type == 2:
+            self.prob_map = self.prior
+        elif self.run_type >= 3:
+            start_pos_rowcol = self.cell_xy_to_rowcol(self.state[:2])[::-1]
+            goal_pos_rowcol = self.cell_xy_to_rowcol(self.goal[:2])[::-1]
+            self.gaussian_pdf, _, _ = gaussian_map(start_pos_rowcol, goal_pos_rowcol)
+            self.prob_map = combine_log_blend(self.prior, self.gaussian_pdf)
 
     def update_prob_map_by_loc(self):
         # print(f"Curr State: {self.state[:2]}, Goal State: {self.goal[:2]}")

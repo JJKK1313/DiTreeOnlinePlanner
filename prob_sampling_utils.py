@@ -225,6 +225,7 @@ def main():
 
     plt.subplot(223)
     combined = combine_log_blend(prob_map, pdf, beta=0.8)
+    xs, ys = sample_from_pdf(combined, n_samples=15)
     hm = plt.imshow(combined, origin="lower", cmap="viridis")
     cax = axs[1, 0].inset_axes((1.05, 0, 0.08, 1.0))
     fig.colorbar(hm, cax=cax)
@@ -239,6 +240,7 @@ def main():
 
     plt.subplot(224)
     combined = combine_log_blend(prob_map, pdf, beta=0.3)
+    xs, ys = sample_from_pdf(combined, n_samples=15)
     hm = plt.imshow(combined, origin="lower", cmap="viridis")
     cax = axs[1, 1].inset_axes((1.05, 0, 0.08, 1.0))
     fig.colorbar(hm, cax=cax)

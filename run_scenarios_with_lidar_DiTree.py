@@ -58,6 +58,9 @@ from obstacle_insertion import insert_obstacle_to_maze
 # from plot_manager import plot_manager, plot_logger
 from plot_logger import plot_logger
 
+#               0               1           2           3               4
+RUN_TYPES = ["Original", "Original+Ref", "OM+Ref", "OM+LB+Ref", "All+ForcedReplan"]
+
 
 def plan_path(planner, curr_state, goal_state, stats2keep: dict, time_budget=None):
     planner.plan_count += 1
@@ -183,7 +186,8 @@ def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, obstacle_dims=[2
                            online_time_budget=2,
                            diffusion_sampler_checkpoints=None,
                            root_folder='benchmark_results/ditree',
-                           obstacle_loc_row_col=None):
+                           obstacle_loc_row_col=None,
+                           run_type=0):
     seed = 42
 
     torch.manual_seed(seed)
@@ -262,6 +266,8 @@ def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, obstacle_dims=[2
                                                       goal_conditioned=True, num_diffusion_iters=num_diffusion_iters,
                                                       local_map_size=local_map_size).eval()
 
+    root_folder = os.path.join(root_folder, f"{online_time_budget} sec replan", RUN_TYPES[run_type],
+                               f'{obstacle_dims[0]} by {obstacle_dims[1]}')
     os.makedirs(root_folder, exist_ok=True)
     dirs_names = os.listdir(root_folder)
     # the index of the current run taken from directories names.
@@ -294,7 +300,8 @@ def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, obstacle_dims=[2
         maze_data = maze_data_original.copy()
 
         # Create a new environment for each maze with the maze data
-        env = CarEnv(maze_map=maze_data, collision_checking=False)  # Collision check is done in RRT Planners
+        env = CarEnv(maze_map=maze_data, collision_checking=False,
+                     run_type=run_type)  # Collision check is done in RRT Planners
 
         # (for convenience).
         start_xy = env.cell_rowcol_to_xy(np.array([int(start_row), int(start_col)]))
@@ -351,7 +358,8 @@ def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, obstacle_dims=[2
                                     verbose=True,
                                     debug=debug,
                                     scenario_num=current_run, scenario_name=scenario_name,
-                                    root_folder=scenario_folder
+                                    root_folder=scenario_folder,
+                                    run_type=run_type
                                     )
 
         planner_name = "diffusion_RRT_PD64"
@@ -394,6 +402,7 @@ def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, obstacle_dims=[2
             executed_actions = []
             stats_2_keep = dict(number_of_nodes=0,
                                 iterations=0)
+            planner.init_main_path = None
             planner.plan_count = -1  # main path is going to be plan 0
             done = False
             curr_state = np.array([start_xy[0], start_xy[1], start_rad, 0, 0, 0])
@@ -427,8 +436,8 @@ def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, obstacle_dims=[2
                     obstacles_in_way = -1
                     prev_plan_time = time.time()
                     while not planner.env.is_done(curr_state):
-                        if (obstacles_in_way >= 0 or action_idx == main_actions.shape[0]):
-                                # or (time.time() - prev_plan_time) >= 2):
+                        if obstacles_in_way >= 0 or action_idx == main_actions.shape[0]:
+                            # or (time.time() - prev_plan_time) >= 2):
                             if obstacles_in_way >= 0:
                                 print("Obstacles in way found!", end=' ')
                             print("Need new plan...")
@@ -459,8 +468,8 @@ def evaluate_all_scenarios(mazes_dir, scenarios_file, cfg_file, obstacle_dims=[2
                         action_time_count = 0
                         total_action_time_count = 0
                         done = False
-                        while (action_idx < main_actions.shape[0] and obstacles_in_way < 0 and not done):
-                               # and (time.time() - prev_plan_time) < 2) and total_action_time_count < 2:
+                        while action_idx < main_actions.shape[0] and obstacles_in_way < 0 and not done:
+                            # and (time.time() - prev_plan_time) < 2 and total_action_time_count < 2):
                             curr_state_temp, done, _, visited_states = planner.propagate_action_sequence_env(
                                 curr_state, main_actions[action_idx, np.newaxis]
                             )
@@ -578,65 +587,83 @@ if __name__ == "__main__":
     diffusion_sampler_checkpoints = {'resnet': 'carmaze_step_40000-001.pt'}
     root_folder = 'benchmark_results/ditree'
 
-    scenario_file = 'experiments/debug1_test_scenarios_car.csv'
-    online_time_budget = 2
-    for cfg_file in ['carmaze']:
-        # col, row
-        # 15, 10    [1, 4]
-        evaluate_all_scenarios('maps/mazes', scenario_file,
-                               obstacle_loc_row_col=[10, 15], obstacle_dims=[1, 4],
-                               cfg_file=cfg_file, total_runs=25, offline_time_budget=60,
-                               online_time_budget=online_time_budget,
-                               diffusion_sampler_checkpoints=diffusion_sampler_checkpoints)
-        # 16, 9     [2, 2]
-        evaluate_all_scenarios('maps/mazes', scenario_file,
-                               obstacle_loc_row_col=[9, 16], obstacle_dims=[2, 2],
-                               cfg_file=cfg_file, total_runs=25, offline_time_budget=60,
-                               online_time_budget=online_time_budget,
-                               diffusion_sampler_checkpoints=diffusion_sampler_checkpoints)
-        # 16, 7     [2, 3]
-        evaluate_all_scenarios('maps/mazes', scenario_file,
-                               obstacle_loc_row_col=[7, 16], obstacle_dims=[2, 3],
-                               cfg_file=cfg_file, total_runs=25, offline_time_budget=60,
-                               online_time_budget=online_time_budget,
-                               diffusion_sampler_checkpoints=diffusion_sampler_checkpoints)
-    scenario_file = 'experiments/debug2_test_scenarios_car.csv'
-    for cfg_file in ['carmaze']:
-        # 7 , 1     [4, 4]
-        evaluate_all_scenarios('maps/mazes', scenario_file,
-                               obstacle_loc_row_col=[1, 7], obstacle_dims=[4, 4],
-                               cfg_file=cfg_file, total_runs=25, offline_time_budget=60,
-                               online_time_budget=online_time_budget,
-                               diffusion_sampler_checkpoints=diffusion_sampler_checkpoints)
+    for run_tidx in range(len(RUN_TYPES)):
+        scenario_file = 'experiments/debug1_test_scenarios_car.csv'
+        online_time_budget = 1
+        TOTAL_RUNS = 25
+        for cfg_file in ['carmaze']:
+            # col, row
+            # 15, 10    [1, 4]
+            evaluate_all_scenarios('maps/mazes', scenario_file,
+                                   obstacle_loc_row_col=[10, 15], obstacle_dims=[1, 4],
+                                   cfg_file=cfg_file, total_runs=TOTAL_RUNS, offline_time_budget=60,
+                                   online_time_budget=online_time_budget,
+                                   diffusion_sampler_checkpoints=diffusion_sampler_checkpoints,
+                                   root_folder=root_folder,
+                                   run_type=run_tidx)
+            # 16, 9     [2, 2]
+            evaluate_all_scenarios('maps/mazes', scenario_file,
+                                   obstacle_loc_row_col=[9, 16], obstacle_dims=[2, 2],
+                                   cfg_file=cfg_file, total_runs=TOTAL_RUNS, offline_time_budget=60,
+                                   online_time_budget=online_time_budget,
+                                   diffusion_sampler_checkpoints=diffusion_sampler_checkpoints,
+                                   root_folder=root_folder,
+                                   run_type=run_tidx)
+            # 16, 7     [2, 3]
+            evaluate_all_scenarios('maps/mazes', scenario_file,
+                                   obstacle_loc_row_col=[7, 16], obstacle_dims=[2, 3],
+                                   cfg_file=cfg_file, total_runs=TOTAL_RUNS, offline_time_budget=60,
+                                   online_time_budget=online_time_budget,
+                                   diffusion_sampler_checkpoints=diffusion_sampler_checkpoints,
+                                   root_folder=root_folder,
+                                   run_type=run_tidx)
+        scenario_file = 'experiments/debug2_test_scenarios_car.csv'
+        for cfg_file in ['carmaze']:
+            # 7 , 1     [4, 4]
+            evaluate_all_scenarios('maps/mazes', scenario_file,
+                                   obstacle_loc_row_col=[1, 7], obstacle_dims=[4, 4],
+                                   cfg_file=cfg_file, total_runs=TOTAL_RUNS, offline_time_budget=60,
+                                   online_time_budget=online_time_budget,
+                                   diffusion_sampler_checkpoints=diffusion_sampler_checkpoints,
+                                   root_folder=root_folder,
+                                   run_type=run_tidx)
 
-    online_time_budget = 4
-    scenario_file = 'experiments/debug1_test_scenarios_car.csv'
-    for cfg_file in ['carmaze']:
-        # col, row
-        # 15, 10    [1, 4]
-        evaluate_all_scenarios('maps/mazes', scenario_file,
-                               obstacle_loc_row_col=[10, 15], obstacle_dims=[1, 4],
-                               cfg_file=cfg_file, total_runs=25, offline_time_budget=60,
-                               online_time_budget=online_time_budget,
-                               diffusion_sampler_checkpoints=diffusion_sampler_checkpoints)
-        # 16, 9     [2, 2]
-        evaluate_all_scenarios('maps/mazes', scenario_file,
-                               obstacle_loc_row_col=[9, 16], obstacle_dims=[2, 2],
-                               cfg_file=cfg_file, total_runs=25, offline_time_budget=60,
-                               online_time_budget=online_time_budget,
-                               diffusion_sampler_checkpoints=diffusion_sampler_checkpoints)
-        # 16, 7     [2, 3]
-        evaluate_all_scenarios('maps/mazes', scenario_file,
-                               obstacle_loc_row_col=[7, 16], obstacle_dims=[2, 3],
-                               cfg_file=cfg_file, total_runs=25, offline_time_budget=60,
-                               online_time_budget=online_time_budget,
-                               diffusion_sampler_checkpoints=diffusion_sampler_checkpoints)
-    scenario_file = 'experiments/debug2_test_scenarios_car.csv'
-    for cfg_file in ['carmaze']:
-        # 7 , 1     [4, 4]
-        evaluate_all_scenarios('maps/mazes', scenario_file,
-                               obstacle_loc_row_col=[1, 7], obstacle_dims=[4, 4],
-                               cfg_file=cfg_file, total_runs=25, offline_time_budget=60,
-                               online_time_budget=online_time_budget,
-                               diffusion_sampler_checkpoints=diffusion_sampler_checkpoints)
-    playsound(r'C:\Users\Jonathan\Music\Jon Bellion - All Time Low (Official Music Video).mp3')
+        online_time_budget = 0.6
+        scenario_file = 'experiments/debug1_test_scenarios_car.csv'
+        for cfg_file in ['carmaze']:
+            # col, row
+            # 15, 10    [1, 4]
+            evaluate_all_scenarios('maps/mazes', scenario_file,
+                                   obstacle_loc_row_col=[10, 15], obstacle_dims=[1, 4],
+                                   cfg_file=cfg_file, total_runs=TOTAL_RUNS, offline_time_budget=60,
+                                   online_time_budget=online_time_budget,
+                                   diffusion_sampler_checkpoints=diffusion_sampler_checkpoints,
+                                   root_folder=root_folder,
+                                   run_type=run_tidx)
+            # 16, 9     [2, 2]
+            evaluate_all_scenarios('maps/mazes', scenario_file,
+                                   obstacle_loc_row_col=[9, 16], obstacle_dims=[2, 2],
+                                   cfg_file=cfg_file, total_runs=TOTAL_RUNS, offline_time_budget=60,
+                                   online_time_budget=online_time_budget,
+                                   diffusion_sampler_checkpoints=diffusion_sampler_checkpoints,
+                                   root_folder=root_folder,
+                                   run_type=run_tidx)
+            # 16, 7     [2, 3]
+            evaluate_all_scenarios('maps/mazes', scenario_file,
+                                   obstacle_loc_row_col=[7, 16], obstacle_dims=[2, 3],
+                                   cfg_file=cfg_file, total_runs=TOTAL_RUNS, offline_time_budget=60,
+                                   online_time_budget=online_time_budget,
+                                   diffusion_sampler_checkpoints=diffusion_sampler_checkpoints,
+                                   root_folder=root_folder,
+                                   run_type=run_tidx)
+        scenario_file = 'experiments/debug2_test_scenarios_car.csv'
+        for cfg_file in ['carmaze']:
+            # 7 , 1     [4, 4]
+            evaluate_all_scenarios('maps/mazes', scenario_file,
+                                   obstacle_loc_row_col=[1, 7], obstacle_dims=[4, 4],
+                                   cfg_file=cfg_file, total_runs=TOTAL_RUNS, offline_time_budget=60,
+                                   online_time_budget=online_time_budget,
+                                   diffusion_sampler_checkpoints=diffusion_sampler_checkpoints,
+                                   root_folder=root_folder,
+                                   run_type=run_tidx)
+        playsound(r'C:\Users\Jonathan\Music\Jon Bellion - All Time Low (Official Music Video).mp3')

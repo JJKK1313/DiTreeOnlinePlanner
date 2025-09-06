@@ -27,6 +27,8 @@ class RRT_Planner(BasePlanner):
         self.offline_time_budget = kwargs.get("offline_time_budget", 60)
         self.plan_count = 0
         self.init_main_path = None
+        self.run_type = kwargs.get('run_type', 0)
+        self.env.run_type = self.run_type
 
     def reset(self, start_state: np.ndarray = None, goal_state: np.ndarray = None, reset_main_path: bool = False):
         if reset_main_path:
@@ -119,19 +121,22 @@ class RRT_Planner(BasePlanner):
         iter_num = 0
         orig_prob_map = self.env.prob_map.copy()
         has_obstacle_ahead = []
-        # self.env.update_prob_map_by_loc()
-        # remain_init_path = self.extract_path_after_obstacle() if self.init_main_path is not None else None
+        if self.run_type >= 3:  # TODO: If After LB Runs
+            self.env.update_prob_map_by_loc()
+        if self.run_type > 0: # TODO: If After Original Run
+            remain_init_path = self.extract_path_after_obstacle() if self.init_main_path is not None else None
+        else:
+            remain_init_path = None
         sample_node = [None]
         while (curr_time - start_time) < self.time_budget:
             if self.verbose:
                 print(f"\rIteration: {iter_num}, Elapsed Time: {(curr_time - start_time):.2f} seconds", end="")
-            # if remain_init_path is not None:
-            #     node_idx = np.random.choice(np.arange(len(remain_init_path)))
+            if remain_init_path is not None:
+                node_idx = np.random.choice(np.arange(len(remain_init_path)))
                 # 40% chance for exploration over exploitation
-                # sample_node = self.random_node_sample() if random.random() < 0.4 else remain_init_path[node_idx][
-                #     np.newaxis]
-            # else:
-            sample_node = self.random_node_sample()  # sample a random state.
+                sample_node = self.random_node_sample() if random.random() < 0.4 else remain_init_path[node_idx][np.newaxis]
+            else:
+                sample_node = self.random_node_sample()  # sample a random state.
 
             curr_node = self.nearest_node(sample_node)
             curr_state = curr_node.state
@@ -145,7 +150,10 @@ class RRT_Planner(BasePlanner):
                 np.clip(curr_node.num_visit, 0, len(self.prop_duration_schedule) - 1)
             ]
             curr_node.num_visit += 1
-            goal = sample_node[0, :2] if random.random() > self.goal_conditioning_bias else self.goal_state[:2]
+            if self.run_type == 0:  # TODO: Original Runs
+                goal = sample_node[0, :2] if random.random() > self.goal_conditioning_bias else self.goal_state[:2]
+            else:
+                goal = sample_node[0, :2]
             for j in range(edge_length // self.action_horizon):
                 iter_num += 1
                 yaw = curr_state[2]
@@ -191,7 +199,11 @@ class RRT_Planner(BasePlanner):
                 full_states_seq = full_states_seq[0, non_zero_rows_mask][np.newaxis]
                 new_node = Node(curr_state, full_action_seq, full_states_seq, parent=curr_node)
                 self.node_list.append(new_node)
-                has_obstacle_ahead.append(self.check_obstacle_ahead(curr_state))
+                if self.run_type == 0:
+                    has_obstacle_ahead.append(False)  # TODO: Original Run
+                else:
+                    has_obstacle_ahead.append(self.check_obstacle_ahead(curr_state)) # TODO: after Original Run
+
                 self.kd_tree = KDTree([node.state[:self.kd_tree_dim] for node in self.node_list])
                 if done:
                     # print diffusion time and total time
@@ -217,22 +229,28 @@ class RRT_Planner(BasePlanner):
             self.results["number_of_nodes"] = len(self.node_list)
             return None, None
 
+        # TODO: Bring back the commented sections when not in Original Run
         node_list_wo_start = self.node_list[1:]
-        if self.init_main_path is None:
+        if self.run_type == 0:
             distances = np.array([np.linalg.norm(nd.state[:2] - self.goal_state[:2]) for nd in node_list_wo_start])
             cost = distances + 10e3 * np.array(has_obstacle_ahead, dtype='int')
             nearest_sample_to_goal = node_list_wo_start[np.argmin(cost)]
         else:
-            # calc for each new node list candidate the nearest neighbor index along main path
-            nn_index_along_main_path = \
-                np.array(
-                    [  # list comprehension
-                        np.argmin(np.linalg.norm(nd.state[:2] - self.init_main_path[:, :2], axis=1))
-                        if not has_obstacle_ahead[idx] else -1 for idx, nd in enumerate(node_list_wo_start)
-                    ]
-                )
-            # if it has obstacle then add big cost
-            nearest_sample_to_goal = node_list_wo_start[np.argmax(nn_index_along_main_path)]
+            if self.init_main_path is None:
+                distances = np.array([np.linalg.norm(nd.state[:2] - self.goal_state[:2]) for nd in node_list_wo_start])
+                cost = distances + 10e3 * np.array(has_obstacle_ahead, dtype='int')
+                nearest_sample_to_goal = node_list_wo_start[np.argmin(cost)]
+            else:
+                # calc for each new node list candidate the nearest neighbor index along main path
+                nn_index_along_main_path = \
+                    np.array(
+                        [  # list comprehension
+                            np.argmin(np.linalg.norm(nd.state[:2] - self.init_main_path[:, :2], axis=1))
+                            if not has_obstacle_ahead[idx] else -1 for idx, nd in enumerate(node_list_wo_start)
+                        ]
+                    )
+                # if it has obstacle then add big cost
+                nearest_sample_to_goal = node_list_wo_start[np.argmax(nn_index_along_main_path)]
         self.env.prob_map = orig_prob_map
         # self.visualize_tree(filename=f'plan_{self.plan_count}_iter_{iter_num}', debug=self._debug,
         #                     goal_state=sample_node[0], has_obs_ahead_list=has_obstacle_ahead.copy())
