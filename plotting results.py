@@ -10,8 +10,8 @@ WANTED_TECHNIQUES = ['mppi', 'ditree']
 PALETTE = sns.color_palette()
 
 MEAN_PROPS = dict(linestyle='--', color='black')
-SHOWFLIERS = True
-ORDER = ['Original', 'Original+Ref', 'OM+Ref', 'OM+LB+Ref', 'All+ForceReplan']
+SHOWFLIERS = False
+ORDER = ['Original', 'Original+Ref', 'OM+Ref', 'OM+LB+Ref', 'All+ForcedReplan']
 
 
 def add_median_labels(ax: plt.Axes, fmt: str = ".2f") -> None:
@@ -170,7 +170,7 @@ def plot_splitted_summarize_scenarios(df_ditree, df_mppi, metrics: dict = None):
                     data=df, x="sampling_tech", y="success", ax=ax, dodge=True,
                     errorbar=None, palette=PALETTE, hue='params', order=ORDER
                 )
-                ax.legend(loc='best')
+                ax.legend(loc='best', ncol=len(df['params'].unique())//2)
                 ax.set_ylim([0, 100])
                 for p in ax.patches:
                     if p.get_width() == 0:
@@ -189,6 +189,7 @@ def plot_splitted_summarize_scenarios(df_ditree, df_mppi, metrics: dict = None):
                     hue='params', showfliers=SHOWFLIERS, palette=PALETTE, meanline=True, showmeans=True,
                     meanprops=MEAN_PROPS, order=ORDER
                 )
+                ax.legend(loc='best', ncol=len(df['params'].unique())//2)
                 add_median_labels(ax)
 
             ax.set_title(f"{df['algorithm'].iloc[0]} Results", fontsize=12)
@@ -204,12 +205,13 @@ def plot_splitted_summarize_scenarios(df_ditree, df_mppi, metrics: dict = None):
 def plot_compare_success_only_scenarios(df, metrics: dict = None):
     sns.set(style="whitegrid", context="paper", font_scale=1.1)
 
-    df = df.drop('scenario', axis=1)
+    # df = df.drop('scenario', axis=1)
     df_success_only = df[df['success'] == True]
     df['success'] *= 100
-    df_success_only['success'] *= 100
+    # df_success_only['success'] *= 100
     df_success_only['params'] = 'Success ' + df_success_only['params']
-    df_full = pd.concat([df, df_success_only])
+    df_full = pd.concat([df, df_success_only]).reset_index().drop('index', axis=1)
+    df = df.reset_index().drop('index', axis=1)
     # --- 1. Summary bar plots (success rate only) ---
 
     for (title, col) in metrics.items():
@@ -221,7 +223,7 @@ def plot_compare_success_only_scenarios(df, metrics: dict = None):
                 data=df, x="sampling_tech", y="success", ax=ax, dodge=True,
                 errorbar=None, palette=PALETTE, hue='params', order=ORDER
             )
-            ax.legend(loc='best')
+            ax.legend(loc='best', ncol=len(df['params'].unique())//2)
             ax.set_ylim([0, 100])
             for p in ax.patches:
                 if p.get_width() == 0:
@@ -234,20 +236,23 @@ def plot_compare_success_only_scenarios(df, metrics: dict = None):
                     ha='left',  # align left to avoid overlap
                     va='center'  # vertically centered
                 )
+            plt.suptitle(f"{title} Comparison", fontsize=20)
         else:
             sns.boxplot(
                 data=df_full, x="sampling_tech", y=col, ax=ax,
                 hue='params', showfliers=SHOWFLIERS, palette=PALETTE, meanline=True, showmeans=True,
                 meanprops=MEAN_PROPS, order=ORDER
             )
+            ax.legend(loc='best', ncol=len(df['params'].unique())//2)
             add_median_labels(ax)
+            plt.suptitle(f"{title} Comparison to only Successful Runs", fontsize=20)
+
 
         ax.set_title(f"{df['algorithm'].iloc[0]} Results", fontsize=12)
         ax.set_ylabel(f"{title}")
         ax.set_xlabel("")
         ax.tick_params(axis="x")
         ax.margins(y=0.01)
-        plt.suptitle(f"{title} Comparison to only Successful Runs", fontsize=20)
         # plt.tight_layout()
         plt.show()
 
@@ -288,6 +293,7 @@ def plot_results_summarize_scenarios(df, metrics: dict = None, successful_only=F
                     data=scen_df, x="sampling_tech", y=col, ax=ax,
                     errorbar=None, palette=PALETTE, hue='params', order=ORDER
                 )
+                ax.legend(loc='best', ncol=len(df['params'].unique())//2)
                 for p in ax.patches:
                     if p.get_width() == 0:
                         continue
@@ -306,6 +312,7 @@ def plot_results_summarize_scenarios(df, metrics: dict = None, successful_only=F
                     palette=PALETTE, hue='params', showfliers=SHOWFLIERS, showmeans=True,  #meanline=True,
                     meanprops=MEAN_PROPS, order=ORDER
                 )
+                ax.legend(loc='best', ncol=len(df['params'].unique())//2)
                 add_median_labels(ax)
                 # Add text labels for medians
             ax.set_title(title, fontsize=13, pad=5)
@@ -318,47 +325,79 @@ def plot_results_summarize_scenarios(df, metrics: dict = None, successful_only=F
 
 
 if __name__ == '__main__':
-    df = None
-    results_dir_final = 'benchmark_results_final'
-    for alg in os.listdir(results_dir_final):
-        if alg in ['DiTreeOld', 'DiTreeNew', 'DiTreeNew2']:
-            continue
-        alg_fold = os.path.join(results_dir_final, alg)
-        for params in os.listdir(alg_fold):
-            params_fold = os.path.join(alg_fold, params)
-            for scenario_name in os.listdir(params_fold):
-                scenario_fold = os.path.join(params_fold, scenario_name)
-                for sampling_tech in os.listdir(scenario_fold):
-                    sampling_tech_fold = os.path.join(scenario_fold, sampling_tech)
-                    for run_num in os.listdir(sampling_tech_fold):
-                        run_path = os.path.join(sampling_tech_fold, run_num)
-                        for maze_name in os.listdir(run_path):
-                            if os.path.isdir(os.path.join(run_path, maze_name)):
-                                csv_path = os.path.join(run_path, maze_name, CSV_NAME)
-                                df_temp = pd.read_csv(csv_path).assign(algorithm=alg, params=params,
-                                                                       scenario=scenario_name,
-                                                                       sampling_tech=sampling_tech)
-                                print(len(df_temp), csv_path)
-                                df = pd.concat([df, df_temp]) if df is not None else df_temp
-    df = df.replace('True', True)
-    df = df.replace('False', False)
-    df['success'] = df['success'].replace('-1', False)
-    df = df.replace('Sampling 1', 'Original+Ref')
-    df = df.replace('Sampling 2', 'OM+Ref')
-    df = df.replace('CM+Ref', 'OM+Ref')
-    df = df.replace('Sampling 3', 'OM+LB+Ref')
-    df = df.replace('CM+LB+Ref', 'OM+LB+Ref')
-    df = df.replace('Sampling 4', 'All+ForceReplan')
-    df = df.replace('All+ConstReplanTime', 'All+ForceReplan')
-    df = df.replace("Regular", "Original")
-    df = df.replace("T16_K10", "MPPI(K=10, T=16)")
-    df = df.replace("T8_K20", "MPPI(K=20, T=8)")
-    df = df.replace("2 seconds planning", "2 sec re-plan")
-    df = df.replace("4 seconds planning", "4 sec re-plan")
-    df['algorithm'] = df['algorithm'].apply(lambda x: 'MPPI' if x == 'MPPI' else 'DiTree')
+    # df = None
+    # results_dir_final = 'benchmark_results_final'
+    # for alg in os.listdir(results_dir_final):
+    #     if alg in ['DiTreeOld', 'DiTreeNew', 'DiTreeNew2', 'DiTreeNew4']:
+    #         continue
+    #     alg_fold = os.path.join(results_dir_final, alg)
+    #     for params in os.listdir(alg_fold):
+    #         params_fold = os.path.join(alg_fold, params)
+    #         for scenario_name in os.listdir(params_fold):
+    #             scenario_fold = os.path.join(params_fold, scenario_name)
+    #             for sampling_tech in os.listdir(scenario_fold):
+    #                 sampling_tech_fold = os.path.join(scenario_fold, sampling_tech)
+    #                 for run_num in os.listdir(sampling_tech_fold):
+    #                     run_path = os.path.join(sampling_tech_fold, run_num)
+    #                     for maze_name in os.listdir(run_path):
+    #                         if os.path.isdir(os.path.join(run_path, maze_name)):
+    #                             csv_path = os.path.join(run_path, maze_name, CSV_NAME)
+    #                             df_temp = pd.read_csv(csv_path).assign(algorithm=alg, params=params,
+    #                                                                    scenario=scenario_name,
+    #                                                                    sampling_tech=sampling_tech)
+    #                             print(len(df_temp), csv_path)
+    #                             df = pd.concat([df, df_temp]) if df is not None else df_temp
+    #
+    # # for alg in os.listdir(results_dir_final):
+    # #     if alg in ['DiTreeOld', 'DiTreeNew', 'DiTreeNew2', 'DiTreeNew3']:
+    # #         continue
+    # #     alg_fold = os.path.join(results_dir_final, alg)
+    # #     for params in os.listdir(alg_fold):
+    # #         params_fold = os.path.join(alg_fold, params)
+    # #         for sampling_tech in os.listdir(params_fold):
+    # #             sampling_tech_fold = os.path.join(params_fold, sampling_tech)
+    # #             for scenario_name in os.listdir(sampling_tech_fold):
+    # #                 scenario_fold = os.path.join(sampling_tech_fold, scenario_name)
+    # #                 for run_num in os.listdir(scenario_fold):
+    # #                     run_path = os.path.join(scenario_fold, run_num)
+    # #                     for maze_name in os.listdir(run_path):
+    # #                         if os.path.isdir(os.path.join(run_path, maze_name)):
+    # #                             csv_path = os.path.join(run_path, maze_name, CSV_NAME)
+    # #                             df_temp = pd.read_csv(csv_path).assign(algorithm=alg, params=params,
+    # #                                                                    scenario=scenario_name,
+    # #                                                                    sampling_tech=sampling_tech)
+    # #                             print(len(df_temp), csv_path)
+    # #                             df = pd.concat([df, df_temp]) if df is not None else df_temp
+    # df = df.replace('True', True)
+    # df = df.replace('False', False)
+    # df['success'] = df['success'].replace('-1', False)
+    # df = df.replace('Sampling 1', 'Original+Ref')
+    # df = df.replace('Sampling 2', 'OM+Ref')
+    # df = df.replace('CM+Ref', 'OM+Ref')
+    # df = df.replace('Sampling 3', 'OM+LB+Ref')
+    # df = df.replace('CM+LB+Ref', 'OM+LB+Ref')
+    # df = df.replace('Sampling 4', 'All+ForcedReplan')
+    # df = df.replace('All+ConstReplanTime', 'All+ForcedReplan')
+    # df = df.replace("Regular", "Original")
+    # df = df.replace("T16_K10", "MPPI(K=10, T=16)")
+    # df = df.replace("T8_K20", "MPPI(K=20, T=8)")
+    # df = df.replace("2 sec replan", "2 sec replan")
+    # df = df.replace("4 sec replan", "4 sec replan")
+    # df = df.replace("Scenario 4 by 4", "4 by 4")
+    # df = df.replace("Scenario 2 by 2", "2 by 2")
+    # df = df.replace("Scenario 1 by 4", "1 by 4")
+    # df = df.replace("Scenario 2 by 3", "2 by 3")
+    # df['algorithm'] = df['algorithm'].apply(lambda x: 'MPPI' if x == 'MPPI' else 'DiTree')
+    # df = df[df['trajectory_time'] >= 0]
+
+    df = pd.read_csv('benchmark_results_final/TotalFinal.csv')
     df_ditree = df[df['algorithm'] != 'MPPI']
     df_mppi = df[df['algorithm'] == 'MPPI']
-    df_mppi['sampling_tech'] = 'Original'
+    # df_mppi['sampling_tech'] = 'Original'
+
+    df = df.reset_index().drop('index', axis=1)
+    df_ditree = df_ditree.reset_index().drop('index', axis=1)
+    df_mppi = df_mppi.reset_index().drop('index', axis=1)
 
     metrics = {
         "Success Rate (%)": "success",
@@ -367,9 +406,9 @@ if __name__ == '__main__':
         "Runtime": "runtime [sec]",
     }
 
-    plot_compare_success_only_scenarios(df_ditree, metrics)
-    plot_splitted_summarize_scenarios(df_ditree.copy(), df_mppi.copy(), metrics)
-    plot_results_summarize_scenarios(df.copy())
+    # plot_compare_success_only_scenarios(df_ditree, metrics)
+    # plot_splitted_summarize_scenarios(df_ditree.copy(), df_mppi.copy(), metrics)
+    # plot_results_summarize_scenarios(df.copy())
 
     df_ditree_success = df_ditree[df_ditree['success'] == True].copy()
     df_mppi_success = df_mppi[df_mppi['success'] == True].copy()
